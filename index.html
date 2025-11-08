@@ -1,0 +1,473 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Travel Festival/Event Calendar</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f7f7f7;
+            padding: 1rem;
+        }
+        .main-container {
+            max-width: 1000px;
+            margin: auto;
+            display: grid;
+            gap: 2rem;
+            grid-template-columns: 1fr;
+        }
+        /* Layout change for admin view (editor + calendar) */
+        @media (min-width: 768px) {
+            .main-container.admin-mode {
+                grid-template-columns: 1fr 2fr;
+            }
+        }
+        /* Layout change for reader view (calendar only, full width) */
+        .main-container.reader-mode {
+            grid-template-columns: 1fr;
+        }
+        .card {
+            background-color: white;
+            padding: 1.5rem;
+            border-radius: 0.75rem;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.06);
+        }
+        /* Calendar styling remains the same */
+        .day-cell {
+            position: relative;
+            aspect-ratio: 1 / 1;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            cursor: pointer;
+            border-radius: 0.5rem;
+            transition: background-color 0.15s ease;
+        }
+        .day-cell:hover:not(.current-month-disabled) {
+            background-color: #f0f0f0;
+        }
+        .event-marker {
+            position: absolute;
+            bottom: 4px;
+            width: 6px;
+            height: 6px;
+            background-color: #1f2937;
+            border-radius: 50%;
+        }
+        .current-day {
+            background-color: #e5e7eb;
+            font-weight: 600;
+        }
+        .selected-day {
+            border: 2px solid #1f2937;
+            background-color: #f3f4f6;
+        }
+        .current-month-disabled {
+            color: #ccc;
+            cursor: default;
+        }
+    </style>
+
+    <!-- Firebase Imports -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, collection, query, onSnapshot, setDoc, serverTimestamp, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Global Firebase and Auth References
+        let app, db, auth;
+        let userId = 'anonymous'; 
+        let isAdminMode = false; // Flag to determine if the user can see the form
+
+        // Global variables for Canvas environment (MUST BE USED)
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        // Calendar State
+        let currentMonth = new Date().getMonth();
+        let currentYear = new Date().getFullYear();
+        let eventsCache = {}; 
+
+        // Function to initialize Firebase and authenticate
+        async function initializeFirebase() {
+            if (!firebaseConfig) {
+                document.getElementById('calendarContainer').innerHTML = '<p class="text-red-600 text-center">Firebase configuration not found. Cannot load events.</p>';
+                return;
+            }
+
+            try {
+                // Determine Admin Mode: If the authentication token is present, assume this is the owner/editor view.
+                isAdminMode = !!initialAuthToken;
+
+                app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+
+                // Authentication: Use token if available (admin), otherwise sign in anonymously (reader)
+                if (isAdminMode) {
+                    await signInWithCustomToken(auth, initialAuthToken);
+                } else {
+                    await signInAnonymously(auth);
+                }
+
+                userId = auth.currentUser?.uid || crypto.randomUUID();
+                document.getElementById('userIdDisplay').textContent = userId;
+
+                // Set up UI based on mode
+                const mainContainer = document.getElementById('mainContainer');
+                const inputFormContainer = document.getElementById('inputFormContainer');
+                
+                if (isAdminMode) {
+                    mainContainer.classList.add('admin-mode');
+                    inputFormContainer.style.display = 'block';
+                    console.log("Mode: Admin (Write/Read)");
+                } else {
+                    mainContainer.classList.add('reader-mode');
+                    inputFormContainer.style.display = 'none';
+                    console.log("Mode: Reader (Read Only)");
+                }
+
+
+                // Start listening for events (All modes read from the public path)
+                startRealtimeListener();
+                
+            } catch (error) {
+                console.error("Firebase/Auth initialization failed:", error);
+                document.getElementById('calendarContainer').innerHTML = '<p class="text-red-600 text-center">Failed to initialize services. Check console for details.</p>';
+            }
+        }
+
+        // Firestore Listener (Reads PUBLIC data)
+        function startRealtimeListener() {
+            if (!db) return;
+
+            // PUBLIC data path for shared calendar viewing
+            const eventsCollectionRef = collection(db, 'artifacts', appId, 'public', 'data', 'festival_events');
+            
+            const q = query(eventsCollectionRef);
+
+            onSnapshot(q, (snapshot) => {
+                eventsCache = {};
+                snapshot.forEach((doc) => {
+                    const event = doc.data();
+                    event.id = doc.id;
+                    const dateKey = event.date; // YYYY-MM-DD
+                    
+                    if (dateKey) {
+                        if (!eventsCache[dateKey]) {
+                            eventsCache[dateKey] = [];
+                        }
+                        eventsCache[dateKey].push(event);
+                    }
+                });
+                console.log("Festival events fetched:", Object.keys(eventsCache).length);
+                renderCalendar(currentMonth, currentYear);
+            }, (error) => {
+                console.error("Firestore listener failed:", error);
+                document.getElementById('eventDetails').innerHTML = `<div class="text-red-500">Error fetching events: ${error.message}</div>`;
+            });
+        }
+
+        // Function to save a new event (Writes to PUBLIC data, but only visible in Admin Mode)
+        async function saveEvent(eventData) {
+            if (!db || !isAdminMode) {
+                document.getElementById('eventDetails').innerHTML = '<div class="text-red-500 p-2">Only the owner can add events.</div>';
+                return;
+            }
+
+            try {
+                // PUBLIC data path for write
+                const eventsCollectionRef = collection(db, 'artifacts', appId, 'public', 'data', 'festival_events');
+                const docId = `${eventData.date}_${Date.now()}`; 
+                
+                await setDoc(doc(eventsCollectionRef, docId), {
+                    ...eventData,
+                    timestamp: serverTimestamp(),
+                    createdBy: userId
+                });
+
+                // Clear form after successful submission
+                document.getElementById('eventForm').reset();
+                document.getElementById('eventDetails').innerHTML = '<div class="text-green-600 p-2">Festival event saved successfully! The calendar has updated.</div>';
+
+            } catch (e) {
+                console.error("Error adding document: ", e);
+                document.getElementById('eventDetails').innerHTML = `<div class="text-red-500">Error saving event: ${e.message}</div>`;
+            }
+        }
+
+
+        // Global functions (made available for button clicks)
+        window.changeMonth = (delta) => {
+            currentMonth += delta;
+            if (currentMonth < 0) {
+                currentMonth = 11;
+                currentYear--;
+            } else if (currentMonth > 11) {
+                currentMonth = 0;
+                currentYear++;
+            }
+            renderCalendar(currentMonth, currentYear);
+            document.getElementById('eventDetails').innerHTML = '<p class="text-gray-500">Select a date with a festival/event to see details.</p>';
+        };
+
+        window.showEventDetails = (dateKey) => {
+            const detailsPanel = document.getElementById('eventDetails');
+            const events = eventsCache[dateKey];
+
+            // Update UI to highlight selected day
+            document.querySelectorAll('.selected-day').forEach(el => el.classList.remove('selected-day'));
+            const selectedCell = document.querySelector(`[data-date-key="${dateKey}"]`);
+            if (selectedCell) {
+                selectedCell.classList.add('selected-day');
+            }
+            
+            if (!events || events.length === 0) {
+                detailsPanel.innerHTML = `<div class="p-3 text-red-500">No festivals/events scheduled for ${dateKey}.</div>`;
+                return;
+            }
+
+            let html = `<h3 class="text-lg font-bold text-gray-800 border-b pb-2 mb-4">Events on ${dateKey}</h3>`;
+
+            events.sort((a, b) => (a.timestamp?.seconds || 0) - (b.timestamp?.seconds || 0));
+
+            events.forEach((event, index) => {
+                const locationHtml = event.location ? `<p class="text-sm font-medium text-gray-700 mt-2">Country / City: <span class="font-normal">${event.location}</span></p>` : '';
+                const picHtml = event.picUrl ? `
+                    <div class="mt-3">
+                        <img src="${event.picUrl}" 
+                             alt="Event Poster" 
+                             class="w-full max-h-32 object-cover rounded-md border border-gray-200"
+                             onerror="this.onerror=null; this.src='https://placehold.co/400x100/f3f4f6/333?text=Placeholder+Image';"
+                        >
+                    </div>` : '';
+
+                // Booking Links rendering
+                const urlsHtml = event.articleUrls && event.articleUrls.length > 0 ? `
+                    <div class="mt-3">
+                        <p class="text-sm font-medium text-gray-700 mb-1">Booking Links (Flights, Hotels, Agents):</p>
+                        <ul class="list-disc ml-5 space-y-1 text-gray-600">
+                            ${event.articleUrls.map((url, i) => `
+                                <li>
+                                    <a href="${url}" target="_blank" class="text-gray-800 hover:text-gray-600 hover:underline break-all">${url}</a>
+                                </li>
+                            `).join('')}
+                        </ul>
+                    </div>
+                ` : '';
+
+
+                html += `
+                    <div class="${index > 0 ? 'mt-4 pt-4 border-t border-gray-100' : ''}">
+                        <p class="text-base text-gray-800 font-semibold">${event.description || 'No Festival Name'}</p>
+                        ${locationHtml}
+                        ${picHtml}
+                        ${urlsHtml}
+                    </div>
+                `;
+            });
+
+            detailsPanel.innerHTML = html;
+        };
+
+        // Date Utilities and renderCalendar function...
+        function getDaysInMonth(month, year) { return new Date(year, month + 1, 0).getDate(); }
+        function getFirstDayOfMonth(month, year) { return new Date(year, month, 1).getDay(); }
+        function formatDate(date, month, year) {
+            const m = String(month + 1).padStart(2, '0');
+            const d = String(date).padStart(2, '0');
+            return `${year}-${m}-${d}`;
+        }
+
+        function renderCalendar(month, year) {
+            const calendarGrid = document.getElementById('calendarGrid');
+            const monthYearDisplay = document.getElementById('monthYearDisplay');
+            const today = new Date();
+            const todayDateKey = formatDate(today.getDate(), today.getMonth(), today.getFullYear());
+            
+            calendarGrid.innerHTML = '';
+            const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+            monthYearDisplay.textContent = `${monthNames[month]} ${year}`;
+            const daysInMonth = getDaysInMonth(month, year);
+            const firstDayIndex = getFirstDayOfMonth(month, year);
+            const daysInPreviousMonth = getDaysInMonth(month - 1, year);
+
+            for (let i = firstDayIndex; i > 0; i--) {
+                const day = daysInPreviousMonth - i + 1;
+                const cell = document.createElement('div');
+                cell.className = 'day-cell current-month-disabled text-gray-400';
+                cell.textContent = day;
+                calendarGrid.appendChild(cell);
+            }
+
+            for (let day = 1; day <= daysInMonth; day++) {
+                const dateKey = formatDate(day, month, year);
+                const hasEvent = eventsCache[dateKey] && eventsCache[dateKey].length > 0;
+                const cell = document.createElement('div');
+                cell.className = 'day-cell text-gray-800 relative';
+                cell.textContent = day;
+                cell.dataset.dateKey = dateKey;
+                cell.onclick = () => showEventDetails(dateKey);
+
+                if (dateKey === todayDateKey) { cell.classList.add('current-day'); }
+                if (hasEvent) {
+                    if (dateKey !== todayDateKey) { cell.classList.add('hover:bg-gray-100'); }
+                    const marker = document.createElement('div');
+                    marker.className = 'event-marker';
+                    cell.appendChild(marker);
+                }
+                calendarGrid.appendChild(cell);
+            }
+            
+            const totalCells = firstDayIndex + daysInMonth;
+            const remainingCells = 42 - totalCells; 
+            for (let i = 1; i <= remainingCells; i++) {
+                const cell = document.createElement('div');
+                cell.className = 'day-cell current-month-disabled text-gray-400';
+                cell.textContent = i;
+                calendarGrid.appendChild(cell);
+            }
+            document.querySelectorAll('.selected-day').forEach(el => el.classList.remove('selected-day'));
+        }
+        
+        // Form Submission Handler
+        document.addEventListener('DOMContentLoaded', () => {
+            initializeFirebase(); // Start the Firebase process on load
+
+            const form = document.getElementById('eventForm');
+            form.addEventListener('submit', async (e) => {
+                e.preventDefault();
+
+                const date = form.date.value;
+                const location = form.location.value;
+                const description = form.description.value;
+                const picUrl = form.picUrl.value;
+                const articleUrlsInput = form.articleUrls.value;
+                
+                if (!date || !description) {
+                    document.getElementById('eventDetails').innerHTML = '<div class="text-red-500 p-2">Event Date and Festival/Event Name are required.</div>';
+                    return;
+                }
+                const articleUrls = articleUrlsInput 
+                    ? articleUrlsInput.split(/[\n,]/).map(url => url.trim()).filter(url => url) 
+                    : [];
+
+                const eventData = {
+                    date,
+                    location: location || 'N/A',
+                    description,
+                    picUrl: picUrl || '',
+                    articleUrls: articleUrls
+                };
+
+                await saveEvent(eventData);
+            });
+            
+            changeMonth(0);
+        });
+
+    </script>
+</head>
+<body class="bg-gray-50">
+
+    <div id="mainContainer" class="main-container">
+
+        <!-- Left Column: Travel Event/Festival Input Form (Hidden in Reader Mode) -->
+        <div id="inputFormContainer" class="card hidden md:block">
+            <h2 class="text-xl font-semibold mb-6 text-gray-700">Add Festival/Event (Admin Only)</h2>
+            <form id="eventForm" class="space-y-4">
+                
+                <!-- Date Input -->
+                <div>
+                    <label for="date" class="block text-sm font-medium text-gray-700 mb-1">Event Date</label>
+                    <input type="date" id="date" name="date" required 
+                           class="w-full p-2 border border-gray-300 rounded-md focus:ring-gray-500 focus:border-gray-500">
+                </div>
+                
+                <!-- Festival / Event Name (Description) -->
+                <div>
+                    <label for="description" class="block text-sm font-medium text-gray-700 mb-1">Festival / Event Name (Required)</label>
+                    <textarea id="description" name="description" rows="2" required 
+                              placeholder="e.g., Oktoberfest, Carnival in Rio, Cherry Blossom Festival"
+                              class="w-full p-2 border border-gray-300 rounded-md focus:ring-gray-500 focus:border-gray-500"></textarea>
+                </div>
+
+                <!-- Country / City (Location) -->
+                <div>
+                    <label for="location" class="block text-sm font-medium text-gray-700 mb-1">Country / City</label>
+                    <input type="text" id="location" name="location" placeholder="e.g., Munich, Germany or Kyoto, Japan"
+                           class="w-full p-2 border border-gray-300 rounded-md focus:ring-gray-500 focus:border-gray-500">
+                </div>
+
+                <!-- Event Poster/Image URL -->
+                <div>
+                    <label for="picUrl" class="block text-sm font-medium text-gray-700 mb-1">Event Poster/Image URL (Optional)</label>
+                    <input type="url" id="picUrl" name="picUrl" placeholder="Link to an image or poster for the event"
+                           class="w-full p-2 border border-gray-300 rounded-md focus:ring-gray-500 focus:border-gray-500">
+                </div>
+
+                <!-- Booking Links (Articles/Links) -->
+                <div>
+                    <label for="articleUrls" class="block text-sm font-medium text-gray-700 mb-1">Booking Links (Flights, Hotels, Agents) - Optional</label>
+                    <textarea id="articleUrls" name="articleUrls" rows="3" 
+                              placeholder="Add multiple booking links, separated by commas or newlines."
+                              class="w-full p-2 border border-gray-300 rounded-md focus:ring-gray-500 focus:border-gray-500"></textarea>
+                </div>
+
+                <!-- Submit Button -->
+                <button type="submit" 
+                        class="w-full py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-gray-800 hover:bg-black focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500 transition duration-150 ease-in-out">
+                    Save Event
+                </button>
+            </form>
+
+            <div class="mt-6 pt-4 border-t border-gray-200">
+                <p class="text-xs text-gray-400">
+                    <span class="font-bold">App ID:</span> ${appId} | 
+                    <span class="font-bold">User ID:</span> <span id="userIdDisplay">Loading...</span>
+                </p>
+            </div>
+        </div>
+
+        <!-- Right Column: Calendar and Details (Visible in All Modes) -->
+        <div class="space-y-6">
+            <!-- Calendar View -->
+            <div id="calendarContainer" class="card">
+                <div class="flex justify-between items-center mb-4">
+                    <button onclick="changeMonth(-1)" class="p-2 rounded-full hover:bg-gray-100 text-gray-600">
+                        <!-- Left Arrow SVG -->
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path></svg>
+                    </button>
+                    <h3 id="monthYearDisplay" class="text-lg font-semibold text-gray-800">Month Year</h3>
+                    <button onclick="changeMonth(1)" class="p-2 rounded-full hover:bg-gray-100 text-gray-600">
+                        <!-- Right Arrow SVG -->
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path></svg>
+                    </button>
+                </div>
+                
+                <!-- Day Names -->
+                <div class="grid grid-cols-7 text-center text-sm font-medium text-gray-500 mb-2 border-b pb-1">
+                    <div>Sun</div><div>Mon</div><div>Tue</div><div>Wed</div><div>Thu</div><div>Fri</div><div>Sat</div>
+                </div>
+
+                <!-- Calendar Grid -->
+                <div id="calendarGrid" class="grid grid-cols-7 gap-1 text-center text-sm">
+                    <!-- Days will be injected here by JavaScript -->
+                </div>
+            </div>
+
+            <!-- Event Details Panel -->
+            <div class="card">
+                <h2 class="text-xl font-semibold mb-4 text-gray-700">Selected Event Details</h2>
+                <div id="eventDetails" class="min-h-[100px]">
+                    <p class="text-gray-500">Select a date with a festival/event to see details.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
