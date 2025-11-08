@@ -8,7 +8,7 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- Load Inter font -->
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght=100..900&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap');
         body {
             font-family: 'Inter', sans-serif;
             background-color: #f7f7f7; /* Very light background */
@@ -48,6 +48,7 @@
     </style>
     <!-- Load Firebase SDKs -->
     <script type="module">
+        // Import Firebase modules for when the config is available
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, onSnapshot, collection, query, addDoc, setDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
@@ -62,7 +63,6 @@
         
         // Safely parse the config string provided by the environment
         try {
-            // Check if the configuration string is not empty before parsing
             if (configString.trim()) {
                 firebaseConfig = JSON.parse(configString);
             }
@@ -70,12 +70,13 @@
             console.error("Error parsing Firebase configuration string. Ensure it is valid JSON:", e);
         }
 
-        // 1. Firebase Initialization
+        // --- Global State and Mode ---
         let app;
-        let db;
+        let db = null; // Set to null initially, used to detect if Firebase initialized
         let auth;
         let userId = null;
         let isAuthReady = false;
+        let isOfflineMode = false; // NEW: Flag for localStorage fallback
 
         const state = {
             currentDate: new Date(),
@@ -85,6 +86,7 @@
 
         const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
         const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+        const LOCAL_STORAGE_KEY = `festival_calendar_data_${appId}`;
 
         // --- Utility Functions ---
 
@@ -95,7 +97,7 @@
             messageBox.style.opacity = 1;
             setTimeout(() => {
                 messageBox.style.opacity = 0;
-            }, 3000);
+            }, 5000); // Show errors longer
         }
 
         function formatDate(date) {
@@ -105,16 +107,40 @@
             return `${y}-${m}-${d}`;
         }
 
-        // --- Calendar Rendering ---
+        // Re-calculate state from the fetched list
+        function updateState(fetchedFestivals) {
+            const eventsByDateMap = {};
+            fetchedFestivals.forEach(festival => {
+                if (!eventsByDateMap[festival.date]) {
+                    eventsByDateMap[festival.date] = [];
+                }
+                eventsByDateMap[festival.date].push(festival);
+            });
+            
+            // Sort festivals client-side (e.g., by date string)
+            fetchedFestivals.sort((a, b) => (a.date > b.date) ? 1 : -1);
 
+            state.festivals = fetchedFestivals;
+            state.eventsByDate = eventsByDateMap;
+
+            // Re-render the calendar and the current day's details
+            renderCalendar();
+            // Re-show details if a date is selected and events changed
+            const selectedDate = document.getElementById('festivalDate').value;
+            if (selectedDate) {
+                showDayDetails(selectedDate);
+            }
+        }
+
+        // --- Calendar Rendering and Navigation (Unchanged) ---
         function renderCalendar() {
+            // ... (calendar rendering logic)
             const { currentDate, eventsByDate } = state;
             const calendarGrid = document.getElementById('calendarGrid');
             const monthTitle = document.getElementById('monthTitle');
 
             if (!calendarGrid || !monthTitle) return;
 
-            // Clear previous grid
             calendarGrid.innerHTML = '';
 
             const today = new Date();
@@ -123,7 +149,7 @@
 
             monthTitle.textContent = `${monthNames[month]} ${year}`;
 
-            const firstDayOfMonth = new Date(year, month, 1).getDay(); // 0 for Sunday, 1 for Monday, etc.
+            const firstDayOfMonth = new Date(year, month, 1).getDay();
             const daysInMonth = new Date(year, month + 1, 0).getDate();
 
             // 1. Render Day Headers
@@ -134,7 +160,7 @@
                 calendarGrid.appendChild(header);
             });
 
-            // 2. Render Blank Days (Padding for the start of the month)
+            // 2. Render Blank Days
             for (let i = 0; i < firstDayOfMonth; i++) {
                 const blank = document.createElement('div');
                 blank.className = 'calendar-day bg-gray-100/50';
@@ -149,14 +175,12 @@
                 const dayElement = document.createElement('div');
                 dayElement.className = 'calendar-day rounded-lg p-3 text-sm transition-transform hover:scale-[1.01] duration-150';
 
-                // Check for current day styling
                 const isToday = today.toDateString() === date.toDateString();
                 let dayClasses = isToday ? 'bg-yellow-100 border-yellow-500' : 'current-month';
 
-                // Check for events
                 const events = eventsByDate[dateString] || [];
                 if (events.length > 0) {
-                    dayClasses += ' has-event'; // Uses the orangish styling defined in <style>
+                    dayClasses += ' has-event';
                 }
 
                 dayElement.className += ` ${dayClasses}`;
@@ -172,7 +196,6 @@
                 // Event list preview
                 if (events.length > 0) {
                     const eventCount = document.createElement('div');
-                    // Changed text color to dark amber to match the event highlight
                     eventCount.className = 'text-xs text-amber-800 font-semibold mt-1 truncate';
                     eventCount.textContent = `${events.length} Festival${events.length > 1 ? 's' : ''}`;
                     dayElement.appendChild(eventCount);
@@ -187,7 +210,6 @@
             const detailsPanel = document.getElementById('dayDetailsPanel');
             const detailsContent = document.getElementById('dayDetailsContent');
 
-            // Set the form date to the clicked date
             document.getElementById('festivalDate').value = dateString;
 
             detailsContent.innerHTML = `
@@ -198,7 +220,6 @@
                 detailsContent.innerHTML += `<p class="text-gray-500 italic">No festivals scheduled for this day.</p>`;
             } else {
                 events.forEach(event => {
-                    // Using Amber colors for the event card
                     detailsContent.innerHTML += `
                         <div class="bg-amber-50 p-4 mb-3 rounded-xl border border-amber-300 shadow-sm transition-all duration-300 hover:shadow-lg hover:border-amber-400">
                             <!-- Image Display -->
@@ -246,11 +267,8 @@
                 });
             }
 
-            // Scroll to the panel for visibility on smaller screens
             detailsPanel.scrollIntoView({ behavior: 'smooth' });
         }
-
-        // --- Calendar Navigation ---
 
         window.prevMonth = () => {
             state.currentDate.setMonth(state.currentDate.getMonth() - 1);
@@ -262,25 +280,41 @@
             renderCalendar();
         }
 
-        // --- Firestore Operations ---
+        // --- NEW: Local Storage Fallback Functions ---
 
-        function getCollectionRef() {
-            if (!db || !userId) {
-                console.error("Firestore or User ID not initialized.");
-                return null;
+        function saveToLocalStorage(festivals) {
+            try {
+                localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(festivals));
+            } catch (e) {
+                console.error("Error saving to localStorage:", e);
+                showMessage("Warning: Local storage failed. Your data might not be saved.", true);
             }
-            // Private user data path: /artifacts/{appId}/users/{userId}/festivals
-            const collectionPath = `/artifacts/${appId}/users/${userId}/festivals`;
-            return collection(db, collectionPath);
         }
+
+        function loadFromLocalStorage() {
+            try {
+                const data = localStorage.getItem(LOCAL_STORAGE_KEY);
+                return data ? JSON.parse(data) : [];
+            } catch (e) {
+                console.error("Error loading from localStorage:", e);
+                return [];
+            }
+        }
+
+        function setupLocalStorageListener() {
+            // Load initial data and update state/render
+            console.log("Offline Mode: Initializing data from localStorage.");
+            const festivals = loadFromLocalStorage();
+            updateState(festivals);
+
+            // In localStorage mode, we manually save and reload on every CRUD operation
+            // The 'listener' is implied by the CRUD functions calling saveToLocalStorage
+        }
+        
+        // --- Shared CRUD Logic (Handles both modes) ---
 
         async function addFestival(event) {
             event.preventDefault();
-
-            if (!isAuthReady || !db) {
-                showMessage("Database connection is still loading. Please wait a moment.", true);
-                return;
-            }
 
             const name = document.getElementById('festivalName').value.trim();
             const date = document.getElementById('festivalDate').value;
@@ -294,21 +328,29 @@
                 showMessage("Please provide both a Festival Name and a Date.", true);
                 return;
             }
+            
+            const newFestival = {
+                name, date, description, location, flightUrl, hotelUrl, imageUrl,
+                createdAt: new Date().toISOString(),
+            };
 
             try {
-                const festivalsRef = getCollectionRef();
-                if (!festivalsRef) throw new Error("Could not get festivals collection reference.");
-
-                await addDoc(festivalsRef, {
-                    name: name,
-                    date: date,
-                    description: description,
-                    location: location,
-                    flightUrl: flightUrl,
-                    hotelUrl: hotelUrl,
-                    imageUrl: imageUrl,
-                    createdAt: new Date(),
-                });
+                if (isOfflineMode) {
+                    // OFFLINE MODE: Use localStorage
+                    newFestival.id = Date.now().toString(); // Use a simple unique ID for local storage
+                    const festivals = loadFromLocalStorage();
+                    festivals.push(newFestival);
+                    saveToLocalStorage(festivals);
+                    updateState(festivals); // Manually trigger update
+                } else {
+                    // FIREBASE MODE: Use Firestore
+                    if (!isAuthReady || !db) {
+                        showMessage("Database connection is still loading. Please wait a moment.", true);
+                        return;
+                    }
+                    const festivalsRef = collection(db, `/artifacts/${appId}/users/${userId}/festivals`);
+                    await addDoc(festivalsRef, newFestival);
+                }
 
                 showMessage("Festival added successfully!");
                 document.getElementById('addFestivalForm').reset();
@@ -317,20 +359,26 @@
                 showMessage("Failed to add festival. Check console for details.", true);
             }
         }
-        window.addFestival = addFestival; // Expose to global scope for HTML event
+        window.addFestival = addFestival;
 
         async function deleteFestival(docId) {
-            if (!isAuthReady || !db) {
-                showMessage("Database connection is still loading. Please wait a moment.", true);
-                return;
-            }
-            
             try {
-                const festivalsRef = getCollectionRef();
-                if (!festivalsRef) throw new Error("Could not get festivals collection reference.");
-
-                const docRef = doc(festivalsRef, docId);
-                await deleteDoc(docRef);
+                if (isOfflineMode) {
+                    // OFFLINE MODE: Use localStorage
+                    let festivals = loadFromLocalStorage();
+                    festivals = festivals.filter(f => f.id !== docId);
+                    saveToLocalStorage(festivals);
+                    updateState(festivals); // Manually trigger update
+                } else {
+                    // FIREBASE MODE: Use Firestore
+                    if (!isAuthReady || !db) {
+                        showMessage("Database connection is still loading. Please wait a moment.", true);
+                        return;
+                    }
+                    const festivalsRef = collection(db, `/artifacts/${appId}/users/${userId}/festivals`);
+                    const docRef = doc(festivalsRef, docId);
+                    await deleteDoc(docRef);
+                }
 
                 showMessage("Festival removed.");
             } catch (e) {
@@ -338,47 +386,30 @@
                 showMessage("Failed to delete festival. Check console for details.", true);
             }
         }
-        window.deleteFestival = deleteFestival; // Expose to global scope for HTML event
+        window.deleteFestival = deleteFestival;
 
         function setupFestivalListener() {
+            if (isOfflineMode) {
+                setupLocalStorageListener();
+                return;
+            }
+            
             if (!db || !userId) {
                 console.error("Firestore or User ID is not ready for listener setup.");
                 return;
             }
 
             try {
-                const festivalsRef = getCollectionRef();
+                const festivalsRef = collection(db, `/artifacts/${appId}/users/${userId}/festivals`);
                 const q = query(festivalsRef);
 
                 onSnapshot(q, (snapshot) => {
                     const fetchedFestivals = [];
-                    const eventsByDateMap = {};
-
                     snapshot.forEach((doc) => {
                         const data = doc.data();
-                        const festival = { id: doc.id, ...data };
-                        fetchedFestivals.push(festival);
-
-                        // Group by date
-                        if (!eventsByDateMap[festival.date]) {
-                            eventsByDateMap[festival.date] = [];
-                        }
-                        eventsByDateMap[festival.date].push(festival);
+                        fetchedFestivals.push({ id: doc.id, ...data });
                     });
-
-                    // Sort festivals client-side (e.g., by date string)
-                    fetchedFestivals.sort((a, b) => (a.date > b.date) ? 1 : -1);
-
-                    state.festivals = fetchedFestivals;
-                    state.eventsByDate = eventsByDateMap;
-
-                    // Re-render the calendar and the current day's details
-                    renderCalendar();
-                    // Re-show details if a date is selected and events changed
-                    const selectedDate = document.getElementById('festivalDate').value;
-                    if (selectedDate) {
-                        showDayDetails(selectedDate);
-                    }
+                    updateState(fetchedFestivals);
                 }, (error) => {
                     console.error("Firestore Listener Error:", error);
                     showMessage("Error fetching real-time data.", true);
@@ -394,18 +425,22 @@
         // --- Authentication and Setup ---
 
         async function initializeFirebase() {
-            try {
-                // Set debug logging for better visibility into Auth/Firestore issues
-                setLogLevel('debug');
+            // Set debug logging for better visibility into Auth/Firestore issues
+            setLogLevel('debug');
                 
-                // CRITICAL CHECK: Ensure the configuration is not empty
-                if (Object.keys(firebaseConfig).length === 0) {
-                    // This means the external environment variable __firebase_config was empty or invalid JSON.
-                    console.error("Firebase Configuration is empty. Cannot initialize app. Please ensure __firebase_config variable is correctly set.");
-                    showMessage("Critical Error: Firebase config missing. Cannot connect to database.", true);
-                    return;
-                }
-
+            if (Object.keys(firebaseConfig).length === 0) {
+                // CRITICAL FAILURE: No configuration provided. Enter Offline Mode.
+                isOfflineMode = true;
+                userId = crypto.randomUUID(); // Assign a temporary user ID for local storage path
+                document.getElementById('userIdDisplay').textContent = `OFFLINE MODE (Local Storage ID: ${userId.substring(0, 8)}...)`;
+                isAuthReady = true;
+                showMessage("Critical Error: Firebase config missing. Using Offline Mode (data will not persist online).", true);
+                setupFestivalListener(); 
+                return;
+            }
+            
+            // FIREBASE MODE: Attempt initialization
+            try {
                 app = initializeApp(firebaseConfig);
                 db = getFirestore(app);
                 auth = getAuth(app);
@@ -432,7 +467,6 @@
 
             } catch (e) {
                 console.error("Firebase Initialization Error: ", e);
-                // Update the user message to reflect the failure
                 showMessage(`Critical Error: Firebase failed to initialize. Check console for details. Error: ${e.message}`, true);
             }
         }
@@ -530,8 +564,8 @@
 
         <!-- Footer / User Info -->
         <footer class="mt-10 pt-4 text-center text-sm text-gray-500 border-t border-gray-300">
-            <p>Your Private Data ID: <code id="userIdDisplay" class="font-mono text-xs bg-gray-200 p-1 rounded-md text-gray-700 break-all">Loading User ID...</code></p>
-            <p class="mt-1">All festival data is saved privately to this ID using Firestore.</p>
+            <p>Data ID Status: <code id="userIdDisplay" class="font-mono text-xs bg-gray-200 p-1 rounded-md text-gray-700 break-all">Loading User ID...</code></p>
+            <p class="mt-1">If the ID above says "OFFLINE MODE", your data is stored locally in your browser.</p>
         </footer>
     </div>
 </body>
