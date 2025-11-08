@@ -39,7 +39,7 @@
         .current-month {
             background-color: #fcfcfc;
         }
-        /* New Black Theme - Event Highlight in Orangish/Amber for contrast */
+        /* Event Highlight in Orangish/Amber for contrast */
         .has-event {
             background-color: #fef3c7; /* Light Amber/Orange for event day (amber-100) */
             border-left: 4px solid #f59e0b; /* Darker Amber accent (amber-500) */
@@ -138,7 +138,6 @@
                 dayElement.className = 'calendar-day rounded-lg p-3 text-sm transition-transform hover:scale-[1.01] duration-150';
 
                 // Check for current day styling
-                // Using a lighter orange/yellow for today for contrast
                 const isToday = today.toDateString() === date.toDateString();
                 let dayClasses = isToday ? 'bg-yellow-100 border-yellow-500' : 'current-month';
 
@@ -375,7 +374,16 @@
 
         async function initializeFirebase() {
             try {
-                // setLogLevel('debug');
+                // Set debug logging for better visibility into Auth/Firestore issues
+                setLogLevel('debug');
+                
+                // CRITICAL CHECK: Ensure the configuration is not empty
+                if (Object.keys(firebaseConfig).length === 0) {
+                    console.error("Firebase Configuration is empty. Cannot initialize app.");
+                    showMessage("Critical Error: Missing Firebase configuration.", true);
+                    return;
+                }
+
                 app = initializeApp(firebaseConfig);
                 db = getFirestore(app);
                 auth = getAuth(app);
@@ -386,12 +394,15 @@
                         userId = user.uid;
                         document.getElementById('userIdDisplay').textContent = userId;
                         isAuthReady = true;
+                        console.log("Firebase Auth Ready. User ID:", userId);
                         setupFestivalListener();
                     } else {
                         // Sign in anonymously if no token is available or if user is signed out
                         if (initialAuthToken) {
+                            console.log("Signing in with custom token...");
                             await signInWithCustomToken(auth, initialAuthToken);
                         } else {
+                            console.log("Signing in anonymously...");
                             await signInAnonymously(auth);
                         }
                     }
@@ -399,7 +410,8 @@
 
             } catch (e) {
                 console.error("Firebase Initialization Error: ", e);
-                showMessage("Critical Error: Firebase failed to initialize. See console.", true);
+                // Update the user message to reflect the failure
+                showMessage(`Critical Error: Firebase failed to initialize. Check console for details. Error: ${e.message}`, true);
             }
         }
 
@@ -413,7 +425,6 @@
             <h1 class="text-4xl sm:text-5xl font-extrabold tracking-tight">
                 Festival Calendar
             </h1>
-            <!-- Subtitle removed as requested -->
         </header>
 
         <div id="messageBox" class="opacity-0 transition-opacity duration-300"></div>
