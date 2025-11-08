@@ -94,8 +94,12 @@
 
         // Function to initialize Firebase and authenticate
         async function initializeFirebase() {
+            const calendarDisplayArea = document.getElementById('calendarDisplayArea');
+
             if (!firebaseConfig) {
-                document.getElementById('calendarContainer').innerHTML = '<p class="text-red-600 text-center">Firebase configuration not found. Cannot load events.</p>';
+                // If config is missing, show error in the calendar area but don't delete controls
+                calendarDisplayArea.innerHTML = '<p class="text-red-600 text-center py-4">Firebase configuration not found. Cannot load events.</p>';
+                document.getElementById('eventDetails').innerHTML = '<p class="text-red-600 text-center">Cannot load event details due to configuration error.</p>';
                 return;
             }
 
@@ -137,7 +141,8 @@
                 
             } catch (error) {
                 console.error("Firebase/Auth initialization failed:", error);
-                document.getElementById('calendarContainer').innerHTML = '<p class="text-red-600 text-center">Failed to initialize services. Check console for details.</p>';
+                // If auth fails, show error in the calendar area
+                calendarDisplayArea.innerHTML = `<p class="text-red-600 text-center py-4">Failed to initialize services. Error: ${error.message}</p>`;
             }
         }
 
@@ -342,6 +347,9 @@
             form.addEventListener('submit', async (e) => {
                 e.preventDefault();
 
+                // Prevent form submission if Firebase is not initialized
+                if (!db || !isAdminMode) return; 
+
                 const date = form.date.value;
                 const location = form.location.value;
                 const description = form.description.value;
@@ -367,6 +375,7 @@
                 await saveEvent(eventData);
             });
             
+            // Initial render call after auth starts
             changeMonth(0);
         });
 
@@ -449,14 +458,17 @@
                     </button>
                 </div>
                 
-                <!-- Day Names -->
-                <div class="grid grid-cols-7 text-center text-sm font-medium text-gray-500 mb-2 border-b pb-1">
-                    <div>Sun</div><div>Mon</div><div>Tue</div><div>Wed</div><div>Thu</div><div>Fri</div><div>Sat</div>
-                </div>
+                <!-- This area will show the actual calendar or the loading error -->
+                <div id="calendarDisplayArea">
+                    <!-- Day Names -->
+                    <div class="grid grid-cols-7 text-center text-sm font-medium text-gray-500 mb-2 border-b pb-1">
+                        <div>Sun</div><div>Mon</div><div>Tue</div><div>Wed</div><div>Thu</div><div>Fri</div><div>Sat</div>
+                    </div>
 
-                <!-- Calendar Grid -->
-                <div id="calendarGrid" class="grid grid-cols-7 gap-1 text-center text-sm">
-                    <!-- Days will be injected here by JavaScript -->
+                    <!-- Calendar Grid -->
+                    <div id="calendarGrid" class="grid grid-cols-7 gap-1 text-center text-sm">
+                        <!-- Days will be injected here by JavaScript -->
+                    </div>
                 </div>
             </div>
 
