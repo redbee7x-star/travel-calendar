@@ -343,11 +343,12 @@ export default function App() {
     );
 
     const CalendarCell = ({ date }) => {
-        // Base styling for all cells
+        // Base styling for all cells - Now explicitly includes a border
         const baseClasses = 'p-3 h-24 text-sm relative transition duration-100 cursor-pointer overflow-hidden';
         
         if (!date) {
-            return <div className={`${baseClasses} bg-gray-200 cursor-default`}></div>; // Empty day styling
+            // Null days are dim grey and fill the space (h-24 is critical)
+            return <div className={`${baseClasses} bg-gray-200 cursor-default border border-gray-200`}></div>; 
         }
 
         const dateKey = formatDayString(date);
@@ -355,14 +356,14 @@ export default function App() {
         const isToday = formatDayString(new Date()) === dateKey;
         const isSelected = selectedDayKey === dateKey;
 
-        // Dynamic classes based on content
-        let dynamicClasses = '';
+        // Dynamic classes based on content, all cells now have a white/orange background and a border
+        let dynamicClasses = 'border border-gray-300';
         if (eventCount > 0) {
             // Event day styling
-            dynamicClasses = 'bg-orange-100 hover:bg-orange-200';
+            dynamicClasses += ' bg-orange-100 hover:bg-orange-200';
         } else {
             // No event day styling
-            dynamicClasses = 'bg-white hover:bg-gray-100';
+            dynamicClasses += ' bg-white hover:bg-gray-100';
         }
 
         // Highlight classes
@@ -532,8 +533,8 @@ export default function App() {
                             </button>
                         </div>
                         
-                        {/* The Grid Container with gap-px for separators */}
-                        <div className="grid grid-cols-7 gap-px text-center bg-gray-300 rounded overflow-hidden shadow-md">
+                        {/* The Grid Container - now using gap-1 for clearer separation */}
+                        <div className="grid grid-cols-7 gap-1 text-center rounded overflow-hidden shadow-md bg-gray-300">
                             {/* Weekday Headers */}
                             {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(day => (
                                 <div key={day} className="bg-gray-300 text-gray-700 p-2 font-semibold text-sm">
