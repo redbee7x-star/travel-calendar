@@ -308,7 +308,7 @@ const App = () => {
             {currentMonthData.days.map((dayData, index) => (
               <div 
                 key={index}
-                // Refactored className to fix the parsing error by using array join
+                // Refactored className to use array join for cleaner conditional styling
                 className={[
                   'p-3 border border-gray-300 text-sm h-24 relative transition duration-100',
                   dayData.type === 'empty' 
@@ -351,7 +351,7 @@ const App = () => {
               <textarea name="event-booking" placeholder="Booking Links (Optional)" rows="2" className="w-full p-2 bg-white border border-gray-300 rounded text-gray-900 focus:ring focus:ring-orange-500"></textarea> {/* Orange focus ring */}
               <button 
                 type="submit" 
-                className="w-full py-2 bg-orange-600 hover:bg-orange-700 text-white font-bold rounded transition duration-150 disabled:opacity-50" {/* Orange button */}
+                className="w-full py-2 bg-orange-600 hover:bg-orange-700 text-white font-bold rounded transition duration-150 disabled:opacity-50"
                 disabled={isSaveDisabled}
               >
                 {isSaveDisabled ? 'Authenticating...' : 'Save Event'}
