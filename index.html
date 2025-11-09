@@ -11,10 +11,10 @@ const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial
 // Helper to format date to YYYY-MM-DD
 const formatDate = (date) => date.toISOString().split('T')[0];
 
-// FIX: Sanitize appId to prevent Firebase path segmentation errors (replaces slashes with dashes)
+// Sanitize appId to prevent Firebase path segmentation errors (replaces slashes with dashes)
 const sanitizedAppId = appId.replace(/\//g, '-');
 
-// --- Event Card Component (Moved outside App for React stability FIX) ---
+// --- Event Card Component ---
 const EventCard = ({ event, userId, onSetEventToDelete }) => {
     const isOwner = event.ownerId === userId;
     let bookingLink = '';
@@ -54,7 +54,7 @@ const EventCard = ({ event, userId, onSetEventToDelete }) => {
 
         {isBookingValid ? (
           <p className="mt-2 text-sm">
-            Booking: <a href={bookingLink} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline truncate">{event.booking}</a>
+            Booking: <a href={bookingLink} target="_blank" rel="noopener noreferrer" className="text-orange-600 hover:underline truncate">{event.booking}</a>
           </p>
         ) : event.booking && (
             <p className="mt-2 text-sm text-gray-500">Booking: {event.booking} (Link Invalid)</p>
@@ -134,9 +134,10 @@ const App = () => {
 
   // --- 2. DATA LISTENER (REAL-TIME READ) ---
   useEffect(() => {
-    if (!db || !isAuthReady) return;
+    // Only proceed if both db is ready AND userId is established (isAuthenticated)
+    if (!db || !userId) return;
 
-    // FIX: Use sanitizedAppId for collection path
+    // Use sanitizedAppId for collection path
     const eventsRef = collection(db, 'artifacts', sanitizedAppId, 'public', 'data', 'events');
     
     const unsubscribe = onSnapshot(eventsRef, (snapshot) => {
@@ -164,12 +165,12 @@ const App = () => {
     });
 
     return () => unsubscribe();
-  }, [db, isAuthReady, selectedDate]);
+  }, [db, userId, selectedDate]); // Dependency added: userId
 
   // --- 3. CRUD OPERATION ---
   const getPublicDataCollectionRef = useCallback(() => {
     if (!db) return null;
-    // FIX: Use sanitizedAppId for collection path
+    // Use sanitizedAppId for collection path
     return collection(db, 'artifacts', sanitizedAppId, 'public', 'data', 'events');
   }, [db]);
 
@@ -272,7 +273,7 @@ const App = () => {
   return (
     <div className="p-4 md:p-8 min-h-screen bg-gray-100 text-gray-900">
       <header className="text-center mb-8 max-w-7xl mx-auto">
-        <h1 className="text-4xl font-extrabold text-blue-600 mb-2">Global Festival Calendar (React)</h1>
+        <h1 className="text-4xl font-extrabold text-orange-600 mb-2">Global Festival Calendar (React)</h1>
         <p className="text-gray-600">Collaborative event management using Firestore.</p>
         <p className="text-sm text-yellow-600 mt-2">
           User ID: {isAuthReady ? userId : 'Connecting to the timeline...'} | Status: {userId ? 'Authenticated' : 'Anonymous'}
@@ -307,13 +308,16 @@ const App = () => {
             {currentMonthData.days.map((dayData, index) => (
               <div 
                 key={index}
-                className={`p-3 border border-gray-300 text-sm h-24 relative transition duration-100 ${
+                // Refactored className to fix the parsing error by using array join
+                className={[
+                  'p-3 border border-gray-300 text-sm h-24 relative transition duration-100',
                   dayData.type === 'empty' 
                     ? 'bg-gray-200' 
                     : dayData.events.length > 0 
-                      ? 'bg-blue-100 hover:bg-blue-200 cursor-pointer has-event' 
-                      : 'bg-white hover:bg-gray-100 cursor-pointer'
-                } ${dayData.isToday ? 'border-2 border-blue-600 today' : ''}`}
+                      ? 'bg-orange-100 hover:bg-orange-200 cursor-pointer has-event' // Orange accent for events
+                      : 'bg-white hover:bg-gray-100 cursor-pointer',
+                  dayData.isToday ? 'border-2 border-orange-600 today' : '' // Orange border for today
+                ].join(' ')}
                 onClick={() => dayData.type === 'day' && handleDayClick(dayData.dateString)}
               >
                 {dayData.type === 'day' && (
@@ -321,7 +325,7 @@ const App = () => {
                     <div className="font-bold mb-1">{dayData.day}</div>
                     {dayData.events.length > 0 && (
                       <>
-                        <span className="absolute top-1 right-1 text-xs px-1 bg-blue-600 text-white rounded-full">
+                        <span className="absolute top-1 right-1 text-xs px-1 bg-orange-600 text-white rounded-full"> {/* Orange badge */}
                           {dayData.events.length}
                         </span>
                         <p className="text-xs truncate text-gray-800 mt-1">{dayData.events[0].name}</p>
@@ -338,16 +342,16 @@ const App = () => {
         <div className="lg:col-span-1 space-y-8">
           
           <div className="bg-white border border-gray-300 rounded-xl p-6 shadow-xl">
-            <h3 className="text-xl font-semibold mb-4 text-blue-600">Add New Event</h3>
+            <h3 className="text-xl font-semibold mb-4 text-orange-600">Add New Event</h3> {/* Orange title */}
             <form onSubmit={handleAddEvent} className="space-y-3">
-              <input type="date" name="event-date" required defaultValue={formatDate(new Date())} className="w-full p-2 bg-white border border-gray-300 rounded text-gray-900 focus:ring focus:ring-blue-500"/>
-              <input type="text" name="event-name" placeholder="Festival / Event Name (Required)" required className="w-full p-2 bg-white border border-gray-300 rounded text-gray-900 focus:ring focus:ring-blue-500"/>
-              <input type="text" name="event-city" placeholder="Country / City" className="w-full p-2 bg-white border border-gray-300 rounded text-gray-900 focus:ring focus:ring-blue-500"/>
-              <input type="url" name="event-image" placeholder="Event Poster/Image URL (Optional)" className="w-full p-2 bg-white border border-gray-300 rounded text-gray-900 focus:ring focus:ring-blue-500"/>
-              <textarea name="event-booking" placeholder="Booking Links (Optional)" rows="2" className="w-full p-2 bg-white border border-gray-300 rounded text-gray-900 focus:ring focus:ring-blue-500"></textarea>
+              <input type="date" name="event-date" required defaultValue={formatDate(new Date())} className="w-full p-2 bg-white border border-gray-300 rounded text-gray-900 focus:ring focus:ring-orange-500"/> {/* Orange focus ring */}
+              <input type="text" name="event-name" placeholder="Festival / Event Name (Required)" required className="w-full p-2 bg-white border border-gray-300 rounded text-gray-900 focus:ring focus:ring-orange-500"/> {/* Orange focus ring */}
+              <input type="text" name="event-city" placeholder="Country / City" className="w-full p-2 bg-white border border-gray-300 rounded text-gray-900 focus:ring focus:ring-orange-500"/> {/* Orange focus ring */}
+              <input type="url" name="event-image" placeholder="Event Poster/Image URL (Optional)" className="w-full p-2 bg-white border border-gray-300 rounded text-gray-900 focus:ring focus:ring-orange-500"/> {/* Orange focus ring */}
+              <textarea name="event-booking" placeholder="Booking Links (Optional)" rows="2" className="w-full p-2 bg-white border border-gray-300 rounded text-gray-900 focus:ring focus:ring-orange-500"></textarea> {/* Orange focus ring */}
               <button 
                 type="submit" 
-                className="w-full py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded transition duration-150 disabled:opacity-50"
+                className="w-full py-2 bg-orange-600 hover:bg-orange-700 text-white font-bold rounded transition duration-150 disabled:opacity-50" {/* Orange button */}
                 disabled={isSaveDisabled}
               >
                 {isSaveDisabled ? 'Authenticating...' : 'Save Event'}
@@ -357,10 +361,9 @@ const App = () => {
           </div>
 
           <div className="bg-white border border-gray-300 rounded-xl p-6 shadow-xl">
-            <h3 className="text-xl font-semibold mb-4 text-blue-600">Selected Event Details</h3>
+            <h3 className="text-xl font-semibold mb-4 text-orange-600">Selected Event Details</h3> {/* Orange title */}
             <div className="space-y-4">
               {selectedDate && allEvents[selectedDate] ? (
-                // FIX: Pass required props to EventCard
                 allEvents[selectedDate].map(event => (
                   <EventCard 
                     key={event.id} 
@@ -382,7 +385,7 @@ const App = () => {
         <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center p-4 z-50">
           <div className="bg-white p-6 rounded-lg shadow-2xl max-w-sm w-full border border-gray-300">
             <h4 className="text-xl font-bold mb-4 text-red-600">Confirm Deletion</h4>
-            <p className="mb-6 text-gray-900">Are you sure you want to delete the event: "<span className="font-semibold text-blue-600">{eventToDelete.name}</span>"?</p>
+            <p className="mb-6 text-gray-900">Are you sure you want to delete the event: "<span className="font-semibold text-orange-600">{eventToDelete.name}</span>"?</p> {/* Orange text */}
             <div className="flex justify-end space-x-3">
               <button 
                 onClick={() => setEventToDelete(null)} 
