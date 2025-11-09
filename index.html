@@ -1,410 +1,641 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
+// Firebase Imports (MUST use relative paths for the file generation environment)
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
-import { getFirestore, collection, onSnapshot, doc, addDoc, deleteDoc } from 'firebase/firestore';
+import { 
+    getFirestore, doc, addDoc, deleteDoc, onSnapshot, collection, query, orderBy, where, Timestamp, setLogLevel, updateDoc
+} from 'firebase/firestore';
 
-// --- Configuration and Global Variables ---
+// Lucide React Icons (Used for aesthetic and functionality)
+const CalendarIcon = (props) => <svg {...props} xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M8 2v4"/><path d="M16 2v4"/><rect width="18" height="18" x="3" y="4" rx="2"/><path d="M3 10h18"/><path d="m9 16h6"/></svg>;
+const ChevronLeftIcon = (props) => <svg {...props} xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6"/></svg>;
+const ChevronRightIcon = (props) => <svg {...props} xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m9 18 6-6-6-6"/></svg>;
+const Trash2Icon = (props) => <svg {...props} xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg>;
+const MapPinIcon = (props) => <svg {...props} xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/></svg>;
+const LinkIcon = (props) => <svg {...props} xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.74 1.74"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>;
+const EditIcon = (props) => <svg {...props} xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></svg>;
+
+
+// --- Constants and Utility Functions ---
+
+// Global variables provided by the environment
 const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
+const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
 const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
-// Helper to format date to YYYY-MM-DD
-const formatDate = (date) => date.toISOString().split('T')[0];
+// Date formatting utility
+const dateFormatter = new Intl.DateTimeFormat('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+const monthYearFormatter = new Intl.DateTimeFormat('en-US', { year: 'numeric', month: 'long' });
 
-// Sanitize appId to prevent Firebase path segmentation errors (replaces slashes with dashes)
-const sanitizedAppId = appId.replace(/\//g, '-');
-
-// --- Event Card Component ---
-const EventCard = ({ event, userId, onSetEventToDelete }) => {
-    const isOwner = event.ownerId === userId;
-    let bookingLink = '';
-    let isBookingValid = false;
-    
-    if (event.booking) {
-      const bookingText = event.booking.trim();
-      // Ensure the link starts with https:// if it doesn't already
-      bookingLink = bookingText.startsWith('http') ? bookingText : `https://${bookingText}`;
-      try {
-        new URL(bookingLink);
-        isBookingValid = true;
-      } catch (e) {
-        isBookingValid = false;
-      }
-    }
-
-    return (
-      <div className="p-4 border border-gray-300 rounded bg-white shadow-lg">
-        <h4 className="text-lg font-bold text-gray-900">{event.name}</h4>
-        <p className="text-sm text-gray-700">Date: {event.date}</p>
-        {event.city && <p className="text-sm text-gray-700">Location: {event.city}</p>}
-
-        {event.image && (
-          <div className="mt-2">
-            <img 
-              src={event.image} 
-              onError={(e) => {
-                e.target.onerror = null; 
-                e.target.src='https://placehold.co/400x100/f3f4f6/374151?text=Poster+Unavailable'; // Light theme placeholder
-              }} 
-              className="w-full h-24 object-cover rounded" 
-              alt="Event Poster"
-            />
-          </div>
-        )}
-
-        {isBookingValid ? (
-          <p className="mt-2 text-sm">
-            Booking: <a href={bookingLink} target="_blank" rel="noopener noreferrer" className="text-orange-600 hover:underline truncate">{event.booking}</a>
-          </p>
-        ) : event.booking && (
-            <p className="mt-2 text-sm text-gray-500">Booking: {event.booking} (Link Invalid)</p>
-        )}
-        
-        {isOwner && (
-          <>
-            <p className="text-xs text-yellow-600 mt-2">You are the owner of this event.</p>
-            <button
-              onClick={() => onSetEventToDelete(event)}
-              className="mt-3 py-1 px-3 bg-red-600 hover:bg-red-700 text-white text-xs font-semibold rounded transition duration-150"
-            >
-              Delete Event
-            </button>
-          </>
-        )}
-      </div>
-    );
+// Function to convert day to a formatted string (YYYY-MM-DD)
+const formatDayString = (date) => {
+    const d = new Date(date);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 };
 
-const App = () => {
-  const [db, setDb] = useState(null);
-  const [auth, setAuth] = useState(null);
-  const [userId, setUserId] = useState(null);
-  const [isAuthReady, setIsAuthReady] = useState(false);
-  const [currentMonth, setCurrentMonth] = useState(new Date());
-  const [allEvents, setAllEvents] = useState({});
-  const [formMessage, setFormMessage] = useState({ text: '', type: '' });
-  const [selectedDate, setSelectedDate] = useState(null);
-  const [eventToDelete, setEventToDelete] = useState(null);
+// --- Calendar Logic ---
 
-  // --- 1. FIREBASE INITIALIZATION AND AUTHENTICATION ---
-  useEffect(() => {
-    if (!firebaseConfig) {
-      console.error("Firebase configuration missing.");
-      setFormMessage({ text: "Error: Firebase configuration missing.", type: 'error' });
-      return;
-    }
-
-    try {
-      const app = initializeApp(firebaseConfig);
-      const firestore = getFirestore(app);
-      const firebaseAuth = getAuth(app);
-      setDb(firestore);
-      setAuth(firebaseAuth);
-
-      const unsubscribe = onAuthStateChanged(firebaseAuth, async (user) => {
-        if (user) {
-          setUserId(user.uid);
-          console.log("User authenticated:", user.uid);
-        } else {
-          try {
-            // Sign in anonymously if no token is available or user is logged out
-            await signInAnonymously(firebaseAuth);
-          } catch (error) {
-            console.error("Anonymous sign-in failed:", error);
-          }
-        }
-        setIsAuthReady(true);
-      });
-
-      // Handle custom token sign-in
-      if (initialAuthToken) {
-        signInWithCustomToken(firebaseAuth, initialAuthToken).catch(err => {
-          console.error("Custom token sign-in failed:", err);
-          setIsAuthReady(true); // Allow process to continue even on failure
-        });
-      }
-
-      return () => unsubscribe();
-    } catch (error) {
-      console.error("Firebase initialization failed:", error);
-      setFormMessage({ text: `Error: Firebase Init failed.`, type: 'error' });
-      setIsAuthReady(true);
-    }
-  }, []);
-
-  // --- 2. DATA LISTENER (REAL-TIME READ) ---
-  useEffect(() => {
-    // Only proceed if both db is ready AND userId is established (isAuthenticated)
-    if (!db || !userId) return;
-
-    // Use sanitizedAppId for collection path
-    const eventsRef = collection(db, 'artifacts', sanitizedAppId, 'public', 'data', 'events');
-    
-    const unsubscribe = onSnapshot(eventsRef, (snapshot) => {
-      const newEvents = {};
-      snapshot.forEach(doc => {
-        const data = doc.data();
-        const eventDate = data.date; 
-        
-        if (!newEvents[eventDate]) newEvents[eventDate] = [];
-        
-        newEvents[eventDate].push({
-          id: doc.id,
-          ...data
-        });
-      });
-      setAllEvents(newEvents);
-      // Re-render details for the selected day if it's currently active
-      if (selectedDate) {
-        setSelectedDate(prev => prev);
-      }
-      console.log("Events updated from Firestore.");
-    }, (error) => {
-      console.error("Error listening to events:", error);
-      setFormMessage({ text: `Error fetching events: ${error.message}`, type: 'error' });
-    });
-
-    return () => unsubscribe();
-  }, [db, userId, selectedDate]); // Dependency added: userId
-
-  // --- 3. CRUD OPERATION ---
-  const getPublicDataCollectionRef = useCallback(() => {
-    if (!db) return null;
-    // Use sanitizedAppId for collection path
-    return collection(db, 'artifacts', sanitizedAppId, 'public', 'data', 'events');
-  }, [db]);
-
-  const handleAddEvent = async (e) => {
-    e.preventDefault();
-    if (!userId || !db) {
-      setFormMessage({ text: "Authentication not complete. Cannot save event.", type: 'error' });
-      return;
-    }
-
-    const form = e.target;
-    const date = form['event-date'].value;
-    const name = form['event-name'].value.trim();
-    const city = form['event-city'].value.trim();
-    const image = form['event-image'].value.trim();
-    const booking = form['event-booking'].value.trim();
-    
-    if (!date || !name) {
-      setFormMessage({ text: "Date and Name are required.", type: 'error' });
-      return;
-    }
-
-    const eventData = { date, name, city, image, booking, ownerId: userId, createdAt: new Date().toISOString() };
-    
-    try {
-      await addDoc(getPublicDataCollectionRef(), eventData);
-      setFormMessage({ text: "Event saved successfully!", type: 'success' });
-      form.reset();
-    } catch (e) {
-      console.error("Error adding document: ", e);
-      setFormMessage({ text: `Error saving event: ${e.message}`, type: 'error' });
-    }
-    setTimeout(() => setFormMessage({ text: '', type: '' }), 3000);
-  };
-
-  const handleDeleteEvent = async () => {
-    if (!eventToDelete) return;
-    
-    if (eventToDelete.ownerId !== userId) {
-      setFormMessage({ text: "You can only delete events you created.", type: 'error' });
-      setEventToDelete(null);
-      return;
-    }
-
-    try {
-      await deleteDoc(doc(getPublicDataCollectionRef(), eventToDelete.id));
-      setFormMessage({ text: "Event deleted successfully!", type: 'success' });
-    } catch (e) {
-      console.error("Error deleting document: ", e);
-      setFormMessage({ text: `Error deleting event: ${e.message}`, type: 'error' });
-    }
-    setEventToDelete(null);
-    setSelectedDate(null);
-    setTimeout(() => setFormMessage({ text: '', type: '' }), 3000);
-  };
-
-  // --- 4. CALENDAR RENDERING LOGIC ---
-  const currentMonthData = useMemo(() => {
-    const year = currentMonth.getFullYear();
-    const month = currentMonth.getMonth();
-    const monthName = currentMonth.toLocaleString('en-us', { month: 'long', year: 'numeric' });
+/**
+ * Generates an array of dates for the calendar grid for a given month.
+ * Includes padding days from the previous and next months.
+ * @param {Date} date - The date object for the month to display.
+ * @returns {Array<Date|null>} An array of 42 (6 weeks) date objects or null for padding.
+ */
+const getCalendarDays = (date) => {
+    const year = date.getFullYear();
+    const month = date.getMonth();
 
     const firstDayOfMonth = new Date(year, month, 1);
-    const daysInMonth = new Date(year, month + 1, 0).getDate();
+    const lastDayOfMonth = new Date(year, month + 1, 0);
+
+    // Get the weekday (0=Sun, 6=Sat) of the first day of the month
     const startDayOfWeek = firstDayOfMonth.getDay(); 
+    // Get the number of days in the month
+    const totalDays = lastDayOfMonth.getDate();
 
     const days = [];
+    
+    // 1. Padding from previous month (empty cells)
     for (let i = 0; i < startDayOfWeek; i++) {
-      days.push({ type: 'empty' });
+        days.push(null);
     }
 
-    const todayDateString = formatDate(new Date());
-
-    for (let day = 1; day <= daysInMonth; day++) {
-      const date = new Date(year, month, day);
-      const dateString = formatDate(date);
-      const eventsOnDay = allEvents[dateString] || [];
-      
-      days.push({
-        type: 'day',
-        day,
-        dateString,
-        isToday: dateString === todayDateString,
-        events: eventsOnDay,
-      });
+    // 2. Days of the current month
+    for (let i = 1; i <= totalDays; i++) {
+        days.push(new Date(year, month, i));
     }
 
-    return { monthName, days };
-  }, [currentMonth, allEvents]);
+    // 3. Padding for next month (fill up to 42 cells for consistent grid)
+    const totalCells = days.length;
+    const remainingCells = 42 - totalCells;
+    for (let i = 0; i < remainingCells; i++) {
+        days.push(null);
+    }
 
-  const handleDayClick = (dateString) => {
-    setSelectedDate(dateString);
-  };
-
-  // --- 5. RENDER UI ---
-  // Updated text colors for light theme
-  const msgClass = formMessage.type === 'error' ? 'text-red-600' : 'text-green-600';
-  const isSaveDisabled = !userId || !db;
-
-  return (
-    <div className="p-4 md:p-8 min-h-screen bg-gray-100 text-gray-900">
-      <header className="text-center mb-8 max-w-7xl mx-auto">
-        <h1 className="text-4xl font-extrabold text-orange-600 mb-2">Global Festival Calendar (React)</h1>
-        <p className="text-gray-600">Collaborative event management using Firestore.</p>
-        <p className="text-sm text-yellow-600 mt-2">
-          User ID: {isAuthReady ? userId : 'Connecting to the timeline...'} | Status: {userId ? 'Authenticated' : 'Anonymous'}
-        </p>
-      </header>
-
-      <div className="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-3 gap-8">
-        
-        {/* Calendar View */}
-        <div className="lg:col-span-2 bg-white border border-gray-300 rounded-xl p-4 shadow-xl">
-          <div className="flex justify-between items-center mb-4">
-            <button 
-              onClick={() => setCurrentMonth(new Date(currentMonth.setMonth(currentMonth.getMonth() - 1)))}
-              className="text-gray-700 p-2 rounded-full hover:bg-gray-200 transition duration-150"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6"/></svg>
-            </button>
-            <h2 className="text-2xl font-semibold text-gray-900">{currentMonthData.monthName}</h2>
-            <button 
-              onClick={() => setCurrentMonth(new Date(currentMonth.setMonth(currentMonth.getMonth() + 1)))}
-              className="text-gray-700 p-2 rounded-full hover:bg-gray-200 transition duration-150"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m9 18 6-6-6-6"/></svg>
-            </button>
-          </div>
-          
-          <div className="grid grid-cols-7 gap-0.5 text-center">
-            {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(day => (
-              <div key={day} className="bg-gray-300 text-gray-700 p-2 font-semibold text-sm">{day}</div>
-            ))}
-            
-            {currentMonthData.days.map((dayData, index) => (
-              <div 
-                key={index}
-                // Refactored className to use array join for cleaner conditional styling
-                className={[
-                  'p-3 border border-gray-300 text-sm h-24 relative transition duration-100',
-                  dayData.type === 'empty' 
-                    ? 'bg-gray-200' 
-                    : dayData.events.length > 0 
-                      ? 'bg-orange-100 hover:bg-orange-200 cursor-pointer has-event' // Orange accent for events
-                      : 'bg-white hover:bg-gray-100 cursor-pointer',
-                  dayData.isToday ? 'border-2 border-orange-600 today' : '' // Orange border for today
-                ].join(' ')}
-                onClick={() => dayData.type === 'day' && handleDayClick(dayData.dateString)}
-              >
-                {dayData.type === 'day' && (
-                  <>
-                    <div className="font-bold mb-1">{dayData.day}</div>
-                    {dayData.events.length > 0 && (
-                      <>
-                        <span className="absolute top-1 right-1 text-xs px-1 bg-orange-600 text-white rounded-full"> {/* Orange badge */}
-                          {dayData.events.length}
-                        </span>
-                        <p className="text-xs truncate text-gray-800 mt-1">{dayData.events[0].name}</p>
-                      </>
-                    )}
-                  </>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* Form and Details */}
-        <div className="lg:col-span-1 space-y-8">
-          
-          <div className="bg-white border border-gray-300 rounded-xl p-6 shadow-xl">
-            <h3 className="text-xl font-semibold mb-4 text-orange-600">Add New Event</h3> {/* Orange title */}
-            <form onSubmit={handleAddEvent} className="space-y-3">
-              <input type="date" name="event-date" required defaultValue={formatDate(new Date())} className="w-full p-2 bg-white border border-gray-300 rounded text-gray-900 focus:ring focus:ring-orange-500"/> {/* Orange focus ring */}
-              <input type="text" name="event-name" placeholder="Festival / Event Name (Required)" required className="w-full p-2 bg-white border border-gray-300 rounded text-gray-900 focus:ring focus:ring-orange-500"/> {/* Orange focus ring */}
-              <input type="text" name="event-city" placeholder="Country / City" className="w-full p-2 bg-white border border-gray-300 rounded text-gray-900 focus:ring focus:ring-orange-500"/> {/* Orange focus ring */}
-              <input type="url" name="event-image" placeholder="Event Poster/Image URL (Optional)" className="w-full p-2 bg-white border border-gray-300 rounded text-gray-900 focus:ring focus:ring-orange-500"/> {/* Orange focus ring */}
-              <textarea name="event-booking" placeholder="Booking Links (Optional)" rows="2" className="w-full p-2 bg-white border border-gray-300 rounded text-gray-900 focus:ring focus:ring-orange-500"></textarea> {/* Orange focus ring */}
-              <button 
-                type="submit" 
-                className="w-full py-2 bg-orange-600 hover:bg-orange-700 text-white font-bold rounded transition duration-150 disabled:opacity-50"
-                disabled={isSaveDisabled}
-              >
-                {isSaveDisabled ? 'Authenticating...' : 'Save Event'}
-              </button>
-            </form>
-            {formMessage.text && <p className={`mt-3 text-sm ${msgClass}`}>{formMessage.text}</p>}
-          </div>
-
-          <div className="bg-white border border-gray-300 rounded-xl p-6 shadow-xl">
-            <h3 className="text-xl font-semibold mb-4 text-orange-600">Selected Event Details</h3> {/* Orange title */}
-            <div className="space-y-4">
-              {selectedDate && allEvents[selectedDate] ? (
-                allEvents[selectedDate].map(event => (
-                  <EventCard 
-                    key={event.id} 
-                    event={event} 
-                    userId={userId} 
-                    onSetEventToDelete={setEventToDelete} 
-                  />
-                ))
-              ) : (
-                <p className="text-gray-600">Select a date on the calendar with an event marker.</p>
-              )}
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Delete Confirmation Modal */}
-      {eventToDelete && (
-        <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center p-4 z-50">
-          <div className="bg-white p-6 rounded-lg shadow-2xl max-w-sm w-full border border-gray-300">
-            <h4 className="text-xl font-bold mb-4 text-red-600">Confirm Deletion</h4>
-            <p className="mb-6 text-gray-900">Are you sure you want to delete the event: "<span className="font-semibold text-orange-600">{eventToDelete.name}</span>"?</p> {/* Orange text */}
-            <div className="flex justify-end space-x-3">
-              <button 
-                onClick={() => setEventToDelete(null)} 
-                className="py-2 px-4 bg-gray-300 hover:bg-gray-400 rounded text-gray-800 transition"
-              >
-                Cancel
-              </button>
-              <button 
-                onClick={handleDeleteEvent} 
-                className="py-2 px-4 bg-red-600 hover:bg-red-700 rounded text-white font-bold transition"
-              >
-                Delete Permanently
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
+    return days;
 };
 
-export default App;
+
+// --- Main Application Component ---
+
+export default function App() {
+    // Firebase State
+    const [db, setDb] = useState(null);
+    const [auth, setAuth] = useState(null);
+    const [userId, setUserId] = useState(null);
+    const [isAuthReady, setIsAuthReady] = useState(false);
+
+    // App State
+    const [currentDate, setCurrentDate] = useState(new Date());
+    const [events, setEvents] = useState({}); // Stores events keyed by YYYY-MM-DD
+    const [selectedDay, setSelectedDay] = useState(new Date());
+    const [isLoading, setIsLoading] = useState(true);
+    const [error, setError] = useState(null);
+    const [successMessage, setSuccessMessage] = useState(null);
+
+    // Modal/Confirmation State
+    const [showDeleteModal, setShowDeleteModal] = useState(false);
+    const [eventToDelete, setEventToDelete] = useState(null);
+    const [isEditing, setIsEditing] = useState(false); // New state to toggle edit mode
+
+    // Form State
+    const initialEventState = useMemo(() => ({
+        id: null,
+        name: '',
+        location: '',
+        imageUrl: '',
+        bookingLink: '',
+        date: formatDayString(new Date()), // Default to today
+    }), []);
+
+    const [eventForm, setEventForm] = useState(initialEventState);
+
+    // --- 1. Firebase Initialization and Authentication ---
+
+    useEffect(() => {
+        setLogLevel('debug');
+        
+        try {
+            const app = initializeApp(firebaseConfig);
+            const firestore = getFirestore(app);
+            const authService = getAuth(app);
+            
+            setDb(firestore);
+            setAuth(authService);
+
+            // Authentication listener
+            const unsubscribeAuth = onAuthStateChanged(authService, async (user) => {
+                if (user) {
+                    setUserId(user.uid);
+                } else {
+                    // Sign in with custom token if available, otherwise anonymously
+                    try {
+                        if (initialAuthToken) {
+                            await signInWithCustomToken(authService, initialAuthToken);
+                        } else {
+                            await signInAnonymously(authService);
+                        }
+                    } catch (e) {
+                        console.error("Firebase Auth Error:", e);
+                        setError("Failed to authenticate. Please check console for details.");
+                    }
+                }
+                setIsAuthReady(true);
+                setIsLoading(false);
+            });
+
+            return () => unsubscribeAuth();
+        } catch (e) {
+            console.error("Firebase Initialization Failed:", e);
+            setError("App failed to initialize Firebase.");
+            setIsLoading(false);
+        }
+    }, []);
+
+    // --- 2. Real-time Data Fetching (Firestore onSnapshot) ---
+
+    useEffect(() => {
+        // Only run if Firestore is initialized and user is authenticated
+        if (!db || !isAuthReady || !userId) return;
+
+        const eventsCollectionRef = collection(db, `artifacts/${appId}/public/data/events`);
+        const q = query(eventsCollectionRef); 
+
+        // onSnapshot listens for real-time updates
+        const unsubscribeEvents = onSnapshot(q, (snapshot) => {
+            const newEventsMap = {};
+            snapshot.forEach((doc) => {
+                const data = doc.data();
+                const event = {
+                    id: doc.id,
+                    ...data,
+                    // Convert Firestore Timestamp to Date object
+                    date: data.date instanceof Timestamp ? data.date.toDate() : new Date(data.date),
+                };
+
+                // Group events by YYYY-MM-DD string
+                const dateKey = formatDayString(event.date);
+                if (!newEventsMap[dateKey]) {
+                    newEventsMap[dateKey] = [];
+                }
+                newEventsMap[dateKey].push(event);
+            });
+            setEvents(newEventsMap);
+            console.log("Events fetched and updated.");
+        }, (err) => {
+            console.error("Firestore Snapshot Error:", err);
+            setError("Failed to load events in real-time.");
+        });
+
+        // Cleanup the listener when the component unmounts or dependencies change
+        return () => unsubscribeEvents();
+    }, [db, isAuthReady, userId]); // Re-run effect if db, auth status, or userId changes
+
+    // --- 3. CRUD Operations (Add/Edit/Delete) ---
+
+    const handleFormSubmit = async (e) => {
+        e.preventDefault();
+        if (!db || !userId) {
+            setError("Application not ready or not authenticated.");
+            return;
+        }
+        if (!eventForm.name || !eventForm.date) {
+            setError("Event Name and Date are required.");
+            return;
+        }
+
+        setIsLoading(true);
+        setError(null);
+        const eventData = {
+            name: eventForm.name,
+            location: eventForm.location || '',
+            imageUrl: eventForm.imageUrl || '',
+            bookingLink: eventForm.bookingLink || '',
+            date: Timestamp.fromDate(new Date(eventForm.date)), // Store as Firestore Timestamp
+            ownerId: userId,
+            // createdAt/updatedAt handled below
+        };
+
+        try {
+            if (eventForm.id && isEditing) {
+                // UPDATE / EDIT existing event
+                const docRef = doc(db, `artifacts/${appId}/public/data/events`, eventForm.id);
+                await updateDoc(docRef, { ...eventData, updatedAt: Timestamp.now() });
+                setSuccessMessage(`Event "${eventForm.name}" updated successfully!`);
+                setIsEditing(false); // Exit edit mode
+            } else {
+                // ADD new event
+                const docRef = await addDoc(collection(db, `artifacts/${appId}/public/data/events`), { 
+                    ...eventData, 
+                    createdAt: Timestamp.now(), 
+                    updatedAt: Timestamp.now() 
+                });
+                setSuccessMessage(`Event "${eventForm.name}" added successfully!`);
+            }
+            
+            // Reset form to default state for the selected day
+            setEventForm({ ...initialEventState, date: formatDayString(selectedDay) }); 
+            setTimeout(() => setSuccessMessage(null), 3000);
+
+        } catch (e) {
+            console.error("Error saving document: ", e);
+            setError(`Failed to ${isEditing ? 'update' : 'save'} event. Check permissions.`);
+        } finally {
+            setIsLoading(false);
+        }
+    };
+    
+    // Function to load an event into the form for editing
+    const startEditing = (event) => {
+        setEventForm({
+            id: event.id,
+            name: event.name,
+            location: event.location,
+            imageUrl: event.imageUrl,
+            bookingLink: event.bookingLink,
+            // Convert Date object back to YYYY-MM-DD string for the date input
+            date: formatDayString(event.date), 
+        });
+        setIsEditing(true);
+        // Scroll to the form section
+        document.getElementById('form-panel')?.scrollIntoView({ behavior: 'smooth' });
+    };
+
+    const cancelEditing = () => {
+        setIsEditing(false);
+        setEventForm({ ...initialEventState, date: formatDayString(selectedDay) });
+        setError(null); // Clear any errors from the edit context
+    }
+
+    const handleDeleteEvent = async () => {
+        if (!db || !eventToDelete || eventToDelete.ownerId !== userId) {
+            setError("You do not have permission to delete this event.");
+            return;
+        }
+
+        setIsLoading(true);
+        setError(null);
+
+        try {
+            const docRef = doc(db, `artifacts/${appId}/public/data/events`, eventToDelete.id);
+            await deleteDoc(docRef);
+            setSuccessMessage(`Event "${eventToDelete.name}" deleted successfully!`);
+            setTimeout(() => setSuccessMessage(null), 3000);
+
+            // If we were editing this event, reset the form
+            if (eventToDelete.id === eventForm.id) {
+                cancelEditing();
+            }
+
+        } catch (e) {
+            console.error("Error deleting document: ", e);
+            setError("Failed to delete event. Check console.");
+        } finally {
+            setIsLoading(false);
+            setShowDeleteModal(false);
+            setEventToDelete(null);
+        }
+    };
+
+
+    // --- 4. Calendar Navigation ---
+
+    const goToPreviousMonth = () => {
+        setCurrentDate(prev => new Date(prev.getFullYear(), prev.getMonth() - 1, 1));
+    };
+
+    const goToNextMonth = () => {
+        setCurrentDate(prev => new Date(prev.getFullYear(), prev.getMonth() + 1, 1));
+    };
+
+    const handleDayClick = (date) => {
+        if (date) {
+            setSelectedDay(date);
+            // Ensure the form date input matches the selected day and reset form
+            setEventForm({ ...initialEventState, date: formatDayString(date) });
+            setIsEditing(false); // Always switch to Add mode on new day click
+            // Scroll to the details section on mobile
+            document.getElementById('details-section')?.scrollIntoView({ behavior: 'smooth' });
+        }
+    };
+
+    // --- Memoized Values ---
+    const daysInMonth = useMemo(() => getCalendarDays(currentDate), [currentDate]);
+    const selectedDayKey = formatDayString(selectedDay);
+    const eventsForSelectedDay = events[selectedDayKey] || [];
+    const eventsByDayCount = useMemo(() => {
+        return Object.entries(events).reduce((acc, [key, list]) => {
+            acc[key] = list.length;
+            return acc;
+        }, {});
+    }, [events]);
+
+
+    // --- UI Components ---
+
+    const LoadingOverlay = () => (
+        <div className="fixed inset-0 bg-black bg-opacity-30 flex items-center justify-center z-50">
+            <div className="flex items-center space-x-3 bg-white p-4 rounded-xl shadow-2xl">
+                <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-orange-600"></div>
+                <span className="text-gray-700 font-semibold">Loading...</span>
+            </div>
+        </div>
+    );
+
+    const CalendarCell = ({ date }) => {
+        // Base styling for all cells
+        const baseClasses = 'p-3 h-24 text-sm relative transition duration-100 cursor-pointer overflow-hidden';
+        
+        if (!date) {
+            return <div className={`${baseClasses} bg-gray-200 cursor-default`}></div>; // Empty day styling
+        }
+
+        const dateKey = formatDayString(date);
+        const eventCount = eventsByDayCount[dateKey] || 0;
+        const isToday = formatDayString(new Date()) === dateKey;
+        const isSelected = selectedDayKey === dateKey;
+
+        // Dynamic classes based on content
+        let dynamicClasses = '';
+        if (eventCount > 0) {
+            // Event day styling
+            dynamicClasses = 'bg-orange-100 hover:bg-orange-200';
+        } else {
+            // No event day styling
+            dynamicClasses = 'bg-white hover:bg-gray-100';
+        }
+
+        // Highlight classes
+        if (isToday) {
+            // Use border/ring for today
+            dynamicClasses += ' border-2 border-orange-600'; 
+        }
+        if (isSelected) {
+            // Use stronger ring for selection
+            dynamicClasses += ' ring-4 ring-orange-400 shadow-inner z-10'; 
+        }
+        
+        // Check if the date is in the current month to correctly dim past/future month days
+        const isCurrentMonth = date.getMonth() === currentDate.getMonth();
+        const textClass = isCurrentMonth ? 'text-gray-900' : 'text-gray-400';
+
+        return (
+            <div className={`${baseClasses} ${dynamicClasses}`} onClick={() => handleDayClick(date)}>
+                <div className={`font-bold mb-1 ${textClass} text-base`}>{date.getDate()}</div>
+                {eventCount > 0 && (
+                    <span className="absolute top-1 right-1 text-xs px-1 bg-orange-600 text-white rounded-full z-20">
+                        {eventCount}
+                    </span>
+                )}
+                {eventCount > 0 && (
+                    <p className="text-xs truncate text-gray-800 mt-1 font-medium">{events[dateKey][0].name}</p>
+                )}
+            </div>
+        );
+    };
+
+    const EventCard = ({ event }) => {
+        const isOwner = event.ownerId === userId;
+        const imageUrl = event.imageUrl && event.imageUrl.match(/^https?:\/\//) 
+            ? event.imageUrl 
+            : `https://placehold.co/400x100/3b82f6/ffffff?text=${encodeURIComponent(event.name.substring(0, 15))}`;
+        
+        return (
+            <div className="p-4 border border-gray-300 rounded bg-gray-50 shadow-inner">
+                <h4 className="text-lg font-bold text-gray-900">{event.name}</h4>
+                <div className="flex items-center text-sm text-gray-700 mt-1">
+                    <MapPinIcon className="w-4 h-4 mr-1 text-orange-500" />
+                    <span>{event.location || 'Unknown Location'}</span>
+                </div>
+
+                <div className="mt-2">
+                    <img 
+                        src={imageUrl} 
+                        onError={(e) => { e.target.onerror = null; e.target.src = `https://placehold.co/400x100/f97316/ffffff?text=Image+Unavailable`; }}
+                        className="w-full h-24 object-cover rounded" 
+                        alt="Event Poster"
+                    />
+                </div>
+
+                <p className="mt-2 text-sm flex items-center">
+                    <LinkIcon className="w-4 h-4 mr-1 text-gray-500" />
+                    Booking: 
+                    {event.bookingLink ? (
+                        <a href={event.bookingLink} target="_blank" rel="noopener noreferrer" className="text-orange-600 hover:underline ml-1 truncate max-w-[80%]">
+                            {event.bookingLink}
+                        </a>
+                    ) : (
+                        <span className="text-gray-500 ml-1">Not Provided</span>
+                    )}
+                </p>
+                
+                <p className="text-xs text-yellow-700 mt-2 font-medium">
+                    {isOwner ? 'You are the owner of this event.' : `Added by another user (${event.ownerId.substring(0, 8)}...)`}
+                </p>
+
+                {isOwner && (
+                    <div className="flex space-x-2 mt-3">
+                        <button
+                            className="py-1 px-3 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded transition duration-150 flex items-center"
+                            onClick={() => startEditing(event)}
+                            disabled={isLoading}
+                        >
+                            <EditIcon className="w-3 h-3 mr-1" />
+                            Edit
+                        </button>
+                        <button
+                            className="py-1 px-3 bg-red-600 hover:bg-red-700 text-white text-xs font-semibold rounded transition duration-150 flex items-center"
+                            onClick={() => { setEventToDelete(event); setShowDeleteModal(true); }}
+                            disabled={isLoading}
+                        >
+                            <Trash2Icon className="w-3 h-3 mr-1" />
+                            Delete
+                        </button>
+                    </div>
+                )}
+            </div>
+        );
+    };
+
+    const DeleteConfirmationModal = () => {
+        if (!showDeleteModal || !eventToDelete) return null;
+
+        return (
+            <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center p-4 z-50">
+                <div className="bg-white p-6 rounded-lg shadow-2xl max-w-sm w-full border border-gray-300">
+                    <h4 className="text-xl font-bold mb-4 text-red-600">Confirm Deletion</h4>
+                    <p className="mb-6 text-gray-900">
+                        Are you sure you want to delete the event: "
+                        <span className="font-semibold text-orange-600">{eventToDelete.name}</span>"?
+                        This action cannot be undone.
+                    </p>
+                    <div className="flex justify-end space-x-3">
+                        <button 
+                            onClick={() => setShowDeleteModal(false)} 
+                            className="py-2 px-4 bg-gray-300 hover:bg-gray-400 rounded text-gray-800 transition"
+                            disabled={isLoading}
+                        >
+                            Cancel
+                        </button>
+                        <button 
+                            onClick={handleDeleteEvent} 
+                            className="py-2 px-4 bg-red-600 hover:bg-red-700 rounded text-white font-bold transition flex items-center"
+                            disabled={isLoading}
+                        >
+                            {isLoading ? 'Deleting...' : 'Delete Permanently'}
+                        </button>
+                    </div>
+                </div>
+            </div>
+        );
+    };
+
+
+    if (isLoading && !isAuthReady) {
+        return <LoadingOverlay />;
+    }
+    
+    // --- Main Render ---
+
+    return (
+        <div className="bg-gray-100 text-gray-900 min-h-screen">
+            {isLoading && <LoadingOverlay />}
+            <DeleteConfirmationModal />
+
+            <div className="p-4 md:p-8 max-w-7xl mx-auto">
+                
+                <header className="text-center mb-8">
+                    <h1 className="text-4xl font-extrabold text-orange-600 mb-2 flex items-center justify-center">
+                        <CalendarIcon className="w-8 h-8 mr-3"/>
+                        Global Festival Calendar
+                    </h1>
+                    <p className="text-gray-600">Collaborative event management using Firestore.</p>
+                    <p className="text-sm text-yellow-600 mt-2">
+                        User ID: <span className="font-mono">{userId || 'Loading...'}</span> | Status: {isAuthReady ? 'Authenticated' : 'Connecting...'}
+                    </p>
+                    {error && <p className="text-red-500 mt-2 font-semibold bg-red-100 p-2 rounded">{error}</p>}
+                </header>
+
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                    
+                    {/* Calendar View */}
+                    <div className="lg:col-span-2 bg-white border border-gray-300 rounded-xl p-4 shadow-xl">
+                        <div className="flex justify-between items-center mb-4">
+                            <button className="text-gray-700 p-2 rounded-full hover:bg-gray-200 transition duration-150" onClick={goToPreviousMonth}>
+                                <ChevronLeftIcon className="w-6 h-6"/>
+                            </button>
+                            <h2 className="text-2xl font-semibold text-gray-900">
+                                {monthYearFormatter.format(currentDate)}
+                            </h2>
+                            <button className="text-gray-700 p-2 rounded-full hover:bg-gray-200 transition duration-150" onClick={goToNextMonth}>
+                                <ChevronRightIcon className="w-6 h-6"/>
+                            </button>
+                        </div>
+                        
+                        {/* The Grid Container with gap-px for separators */}
+                        <div className="grid grid-cols-7 gap-px text-center bg-gray-300 rounded overflow-hidden shadow-md">
+                            {/* Weekday Headers */}
+                            {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(day => (
+                                <div key={day} className="bg-gray-300 text-gray-700 p-2 font-semibold text-sm">
+                                    {day}
+                                </div>
+                            ))}
+                            
+                            {/* Calendar Days Grid */}
+                            {daysInMonth.map((date, index) => (
+                                <CalendarCell key={index} date={date} />
+                            ))}
+                        </div>
+                    </div>
+
+                    {/* Form and Details */}
+                    <div className="lg:col-span-1 space-y-8" id="details-section">
+                        
+                        {/* Add/Edit Event Panel */}
+                        <div className="bg-white border border-gray-300 rounded-xl p-6 shadow-xl" id="form-panel">
+                            <h3 className="text-xl font-semibold mb-4 text-orange-600">
+                                {isEditing ? 'Edit Existing Event' : 'Add New Event'}
+                            </h3>
+                            <form className="space-y-3" onSubmit={handleFormSubmit}>
+                                <input 
+                                    type="date" 
+                                    value={eventForm.date} 
+                                    onChange={(e) => setEventForm(p => ({ ...p, date: e.target.value }))}
+                                    required 
+                                    className="w-full p-2 bg-white border border-gray-300 rounded text-gray-900 focus:ring focus:ring-orange-500"
+                                    disabled={isEditing} // Cannot change date while editing. Must delete/re-add if date changes.
+                                />
+                                <input 
+                                    type="text" 
+                                    placeholder="Festival / Event Name (Required)" 
+                                    value={eventForm.name}
+                                    onChange={(e) => setEventForm(p => ({ ...p, name: e.target.value }))}
+                                    required 
+                                    className="w-full p-2 bg-white border border-gray-300 rounded text-gray-900 focus:ring focus:ring-orange-500"
+                                />
+                                <input 
+                                    type="text" 
+                                    placeholder="Country / City" 
+                                    value={eventForm.location}
+                                    onChange={(e) => setEventForm(p => ({ ...p, location: e.target.value }))}
+                                    className="w-full p-2 bg-white border border-gray-300 rounded text-gray-900 focus:ring focus:ring-orange-500"
+                                />
+                                <input 
+                                    type="url" 
+                                    placeholder="Event Poster/Image URL (Optional)" 
+                                    value={eventForm.imageUrl}
+                                    onChange={(e) => setEventForm(p => ({ ...p, imageUrl: e.target.value }))}
+                                    className="w-full p-2 bg-white border border-gray-300 rounded text-gray-900 focus:ring focus:ring-orange-500"
+                                />
+                                <textarea 
+                                    placeholder="Booking Links (Optional)" 
+                                    rows="2" 
+                                    value={eventForm.bookingLink}
+                                    onChange={(e) => setEventForm(p => ({ ...p, bookingLink: e.target.value }))}
+                                    className="w-full p-2 bg-white border border-gray-300 rounded text-gray-900 focus:ring focus:ring-orange-500"
+                                ></textarea>
+                                
+                                <div className="flex space-x-2">
+                                    <button 
+                                        type="submit" 
+                                        className={`w-full py-2 text-white font-bold rounded transition duration-150 ${isEditing ? 'bg-blue-600 hover:bg-blue-700' : 'bg-orange-600 hover:bg-orange-700'}`}
+                                        disabled={isLoading || !isAuthReady}
+                                    >
+                                        {isLoading ? 'Processing...' : isEditing ? 'Update Event' : 'Save New Event'}
+                                    </button>
+                                    {isEditing && (
+                                        <button 
+                                            type="button"
+                                            onClick={cancelEditing}
+                                            className="w-1/3 py-2 bg-gray-500 hover:bg-gray-600 text-white font-bold rounded transition duration-150"
+                                            disabled={isLoading}
+                                        >
+                                            Cancel
+                                        </button>
+                                    )}
+                                </div>
+                            </form>
+                            {successMessage && <p className="mt-3 text-sm text-green-600 font-semibold">{successMessage}</p>}
+                        </div>
+
+                        {/* Selected Event Details Panel */}
+                        <div className="bg-white border border-gray-300 rounded-xl p-6 shadow-xl">
+                            <h3 className="text-xl font-semibold mb-4 text-orange-600">
+                                Event Details ({dateFormatter.format(selectedDay)})
+                            </h3>
+                            <div className="space-y-4">
+                                {eventsForSelectedDay.length > 0 ? (
+                                    eventsForSelectedDay.map(event => (
+                                        <EventCard key={event.id} event={event} />
+                                    ))
+                                ) : (
+                                    <p className="text-gray-500 italic">No events scheduled for this date.</p>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    );
+}
