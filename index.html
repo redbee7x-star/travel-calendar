@@ -1,572 +1,530 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Festival Calendar</title>
-    <!-- Load Tailwind CSS -->
-    <script src="https://cdn.tailwindcss.com"></script>
-    <!-- Load Inter font -->
-    <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap');
-        body {
-            font-family: 'Inter', sans-serif;
-            background-color: #f7f7f7; /* Very light background */
-        }
-        /* Custom styles for the calendar grid */
-        .day-grid {
-            display: grid;
-            grid-template-columns: repeat(7, 1fr);
-            gap: 2px;
-        }
-        .day-header {
-            padding: 8px;
-            text-align: center;
-            font-weight: 600;
-            color: #4a5568;
-        }
-        .calendar-day {
-            min-height: 100px;
-            padding: 8px;
-            background-color: #ffffff;
-            border: 1px solid #e2e8f0;
-            cursor: pointer;
-            transition: all 0.2s;
-        }
-        .calendar-day:hover {
-            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.1);
-        }
-        .current-month {
-            background-color: #fcfcfc;
-        }
-        /* Event Highlight in Orangish/Amber for contrast */
-        .has-event {
-            background-color: #fef3c7; /* Light Amber/Orange for event day (amber-100) */
-            border-left: 4px solid #f59e0b; /* Darker Amber accent (amber-500) */
-            position: relative;
-        }
-    </style>
-    <!-- Load Firebase SDKs -->
-    <script type="module">
-        // Import Firebase modules for when the config is available
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, onSnapshot, collection, query, addDoc, setDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-        import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+import React, { useState, useEffect } from 'react';
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
+import { getFirestore, collection, query, onSnapshot, addDoc, serverTimestamp, setLogLevel, deleteDoc, doc } from 'firebase/firestore';
+import { Calendar, AlertCircle, Loader, Plus, Save, Link, Image, MapPin, AlignLeft, Trash2 } from 'lucide-react';
 
-        // IMPORTANT: Global variables provided by the environment
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-        const configString = typeof __firebase_config !== 'undefined' ? __firebase_config : '';
-        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
-        
-        let firebaseConfig = {};
-        
-        // Safely parse the config string provided by the environment
+// --- CONFIGURATION AND FIREBASE GLOBAL VARIABLES ---
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
+const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+// Use 'public' collection for data visible to everyone (the Reader view)
+const getGlobalCollectionPath = () => `/artifacts/${appId}/public/data/festival_events`;
+
+// Enable detailed console logs for debugging
+setLogLevel('debug');
+
+const DateUtils = {
+  getDaysInMonth: (date) => new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate(),
+  getFirstDayOfMonth: (date) => new Date(date.getFullYear(), date.getMonth(), 1).getDay(),
+  formatDate: (date) => date.toISOString().split('T')[0],
+  getMonthYearString: (date) => date.toLocaleString('en-US', { year: 'numeric', month: 'long' }),
+};
+
+// Main App Component
+const App = () => {
+  const [db, setDb] = useState(null);
+  const [userId, setUserId] = useState(null);
+  const [isAuthReady, setIsAuthReady] = useState(false);
+  const [events, setEvents] = useState({}); // { 'YYYY-MM-DD': [{ ...data, id }] }
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [currentDate, setCurrentDate] = useState(new Date());
+  const [showModal, setShowModal] = useState(false);
+  const [selectedDate, setSelectedDate] = useState(DateUtils.formatDate(new Date()));
+  
+  // State for multi-click delete confirmation (to avoid using window.confirm)
+  const [confirmingDeleteId, setConfirmingDeleteId] = useState(null);
+
+  // New Event State with Location and Description
+  const [newEvent, setNewEvent] = useState({
+    title: '',
+    time: '',
+    location: '',      
+    description: '',   
+    articleLink: '',
+    bookingLink: '',
+    imageUrl: '',
+  });
+  const [isSaving, setIsSaving] = useState(false);
+
+  // --- 1. FIREBASE INITIALIZATION AND AUTHENTICATION ---
+  useEffect(() => {
+    if (!firebaseConfig) {
+      setError('Firebase configuration is missing.');
+      setLoading(false);
+      return;
+    }
+
+    try {
+      const app = initializeApp(firebaseConfig);
+      const newAuth = getAuth(app);
+      const newDb = getFirestore(app);
+      setDb(newDb);
+
+      const authenticate = async () => {
         try {
-            if (configString.trim()) {
-                firebaseConfig = JSON.parse(configString);
-            }
+          if (initialAuthToken) {
+            await signInWithCustomToken(newAuth, initialAuthToken);
+          } else {
+            await signInAnonymously(newAuth);
+          }
         } catch (e) {
-            console.error("Error parsing Firebase configuration string. Ensure it is valid JSON:", e);
+          console.error('Authentication Error:', e);
+          setError(`Authentication failed: ${e.code}`);
         }
+      };
+      
+      authenticate();
 
-        // --- Global State and Mode ---
-        let app;
-        let db = null; // Set to null initially, used to detect if Firebase initialized
-        let auth;
-        let userId = null;
-        let isAuthReady = false;
-        let isOfflineMode = false; // NEW: Flag for localStorage fallback
-
-        const state = {
-            currentDate: new Date(),
-            festivals: [], // Stores all fetched festival objects
-            eventsByDate: {} // Stores festivals grouped by 'YYYY-MM-DD'
-        };
-
-        const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
-        const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-        const LOCAL_STORAGE_KEY = `festival_calendar_data_${appId}`;
-
-        // --- Utility Functions ---
-
-        function showMessage(message, isError = false) {
-            const messageBox = document.getElementById('messageBox');
-            messageBox.textContent = message;
-            messageBox.className = `p-4 rounded-lg shadow-lg mb-4 text-white font-semibold transition-opacity duration-300 ${isError ? 'bg-red-600' : 'bg-green-600'}`;
-            messageBox.style.opacity = 1;
-            setTimeout(() => {
-                messageBox.style.opacity = 0;
-            }, 5000); // Show errors longer
+      const unsubscribe = onAuthStateChanged(newAuth, (user) => {
+        if (user) {
+          setUserId(user.uid);
+          setIsAuthReady(true);
         }
+        setLoading(false);
+      });
+      return () => unsubscribe();
+    } catch (e) {
+      console.error('Firebase Initialization Error:', e);
+      setError('Failed to initialize Firebase.');
+      setLoading(false);
+    }
+  }, []);
 
-        function formatDate(date) {
-            const y = date.getFullYear();
-            const m = String(date.getMonth() + 1).padStart(2, '0');
-            const d = String(date.getDate()).padStart(2, '0');
-            return `${y}-${m}-${d}`;
+  // --- 2. DATA LISTENER (REAL-TIME READ) ---
+  useEffect(() => {
+    if (!isAuthReady || !db) return;
+
+    const eventsCollectionRef = collection(db, getGlobalCollectionPath());
+    const q = query(eventsCollectionRef);
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const fetchedEvents = {};
+      snapshot.forEach((doc) => {
+        const data = doc.data();
+        const dateKey = data.date;
+        if (!fetchedEvents[dateKey]) {
+          fetchedEvents[dateKey] = [];
         }
+        fetchedEvents[dateKey].push({ id: doc.id, ...data });
+      });
+      setEvents(fetchedEvents);
+    }, (e) => {
+      console.error('Firestore Snapshot Error:', e);
+      setError('Failed to fetch real-time events.');
+    });
 
-        // Re-calculate state from the fetched list
-        function updateState(fetchedFestivals) {
-            const eventsByDateMap = {};
-            fetchedFestivals.forEach(festival => {
-                if (!eventsByDateMap[festival.date]) {
-                    eventsByDateMap[festival.date] = [];
-                }
-                eventsByDateMap[festival.date].push(festival);
-            });
-            
-            // Sort festivals client-side (e.g., by date string)
-            fetchedFestivals.sort((a, b) => (a.date > b.date) ? 1 : -1);
+    return () => unsubscribe();
+  }, [isAuthReady, db]);
 
-            state.festivals = fetchedFestivals;
-            state.eventsByDate = eventsByDateMap;
+  // --- 3. CRUD OPERATION (WRITE/EDITOR FUNCTIONALITY) ---
 
-            // Re-render the calendar and the current day's details
-            renderCalendar();
-            // Re-show details if a date is selected and events changed
-            const selectedDate = document.getElementById('festivalDate').value;
-            if (selectedDate) {
-                showDayDetails(selectedDate);
-            }
-        }
+  const handleAddEventClick = (date) => {
+    setSelectedDate(date);
+    // Reset event state for new entry
+    setNewEvent({
+      title: '',
+      time: '',
+      location: '',
+      description: '',
+      articleLink: '',
+      bookingLink: '',
+      imageUrl: '',
+    });
+    setConfirmingDeleteId(null); // Clear any pending delete confirmation
+    setShowModal(true);
+  };
 
-        // --- Calendar Rendering and Navigation (Unchanged) ---
-        function renderCalendar() {
-            // ... (calendar rendering logic)
-            const { currentDate, eventsByDate } = state;
-            const calendarGrid = document.getElementById('calendarGrid');
-            const monthTitle = document.getElementById('monthTitle');
+  const handleInputChange = (e) => {
+    const { name, value } = e.target;
+    setNewEvent(prev => ({ ...prev, [name]: value }));
+  };
 
-            if (!calendarGrid || !monthTitle) return;
+  const handleSaveEvent = async () => {
+    if (!newEvent.title || !selectedDate || !db || !userId) {
+      setError('Please provide a title and ensure the app is connected.');
+      return;
+    }
 
-            calendarGrid.innerHTML = '';
+    setIsSaving(true);
+    setError('');
 
-            const today = new Date();
-            const year = currentDate.getFullYear();
-            const month = currentDate.getMonth();
+    const eventData = {
+      ...newEvent,
+      date: selectedDate, // YYYY-MM-DD
+      time: newEvent.time.trim() || 'All Day',
+      location: newEvent.location.trim() || '',
+      description: newEvent.description.trim() || '',
+      timestamp: serverTimestamp(),
+      createdBy: userId,
+    };
 
-            monthTitle.textContent = `${monthNames[month]} ${year}`;
+    try {
+      const eventsCollectionRef = collection(db, getGlobalCollectionPath());
+      await addDoc(eventsCollectionRef, eventData);
+      setShowModal(false);
+    } catch (e) {
+      console.error('Error saving event:', e);
+      setError('Failed to save event. Check connection and permissions.');
+    } finally {
+      setIsSaving(false);
+    }
+  };
 
-            const firstDayOfMonth = new Date(year, month, 1).getDay();
-            const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const handleDeleteEvent = async (eventId) => {
+    if (confirmingDeleteId === eventId) {
+      // Execute Delete on second click
+      if (!db || !userId) {
+        setError('App is not connected or user is not authenticated.');
+        return;
+      }
+      
+      const eventDocRef = doc(db, getGlobalCollectionPath(), eventId);
+      
+      try {
+        await deleteDoc(eventDocRef);
+        setConfirmingDeleteId(null); // Reset state
+      } catch (e) {
+        console.error('Error deleting event:', e);
+        setError('Failed to delete event. Check connection and permissions.');
+      }
+    } else {
+      // First click: Ask for confirmation
+      setConfirmingDeleteId(eventId);
+      // Automatically reset confirmation state after a short delay (e.g., 5 seconds)
+      setTimeout(() => {
+        setConfirmingDeleteId(prevId => (prevId === eventId ? null : prevId));
+      }, 5000);
+    }
+  };
 
-            // 1. Render Day Headers
-            dayNames.forEach(day => {
-                const header = document.createElement('div');
-                header.className = 'day-header bg-gray-200 rounded-t-lg shadow-sm';
-                header.textContent = day;
-                calendarGrid.appendChild(header);
-            });
 
-            // 2. Render Blank Days
-            for (let i = 0; i < firstDayOfMonth; i++) {
-                const blank = document.createElement('div');
-                blank.className = 'calendar-day bg-gray-100/50';
-                calendarGrid.appendChild(blank);
-            }
+  const handleNavigation = (direction) => {
+    setCurrentDate(prevDate => {
+      const newDate = new Date(prevDate.getTime());
+      newDate.setMonth(prevDate.getMonth() + direction);
+      return newDate;
+    });
+  };
 
-            // 3. Render Days of the Month
-            for (let day = 1; day <= daysInMonth; day++) {
-                const date = new Date(year, month, day);
-                const dateString = formatDate(date);
+  const today = DateUtils.formatDate(new Date());
 
-                const dayElement = document.createElement('div');
-                dayElement.className = 'calendar-day rounded-lg p-3 text-sm transition-transform hover:scale-[1.01] duration-150';
+  // --- 4. CALENDAR RENDERING LOGIC ---
 
-                const isToday = today.toDateString() === date.toDateString();
-                let dayClasses = isToday ? 'bg-yellow-100 border-yellow-500' : 'current-month';
+  const renderCalendar = () => {
+    const year = currentDate.getFullYear();
+    const month = currentDate.getMonth();
+    const daysInMonth = DateUtils.getDaysInMonth(currentDate);
+    const firstDay = DateUtils.getFirstDayOfMonth(currentDate);
+    const calendarDays = [];
 
-                const events = eventsByDate[dateString] || [];
-                if (events.length > 0) {
-                    dayClasses += ' has-event';
-                }
+    // Add empty placeholders
+    for (let i = 0; i < firstDay; i++) {
+      calendarDays.push(<div key={`empty-${i}`} className="p-2 border border-gray-100 bg-gray-50"></div>);
+    }
 
-                dayElement.className += ` ${dayClasses}`;
-                dayElement.setAttribute('data-date', dateString);
-                dayElement.onclick = () => showDayDetails(dateString);
+    // Add days of the current month
+    for (let day = 1; day <= daysInMonth; day++) {
+      const dateKey = DateUtils.formatDate(new Date(year, month, day));
+      const dayEvents = events[dateKey] || [];
+      const isToday = dateKey === today;
 
-                // Day number
-                const dayNumber = document.createElement('div');
-                dayNumber.className = 'font-bold text-lg mb-1';
-                dayNumber.textContent = day;
-                dayElement.appendChild(dayNumber);
+      const dayClass = isToday
+        ? 'bg-gray-200 text-gray-900 font-bold border-2 border-gray-800 shadow-lg'
+        : 'bg-white hover:bg-gray-50';
 
-                // Event list preview
-                if (events.length > 0) {
-                    const eventCount = document.createElement('div');
-                    eventCount.className = 'text-xs text-amber-800 font-semibold mt-1 truncate';
-                    eventCount.textContent = `${events.length} Festival${events.length > 1 ? 's' : ''}`;
-                    dayElement.appendChild(eventCount);
-                }
+      calendarDays.push(
+        <div
+          key={dateKey}
+          className={`h-32 p-1 sm:p-2 border border-gray-200 cursor-pointer transition-all duration-150 rounded-lg flex flex-col ${dayClass}`}
+          // Only the Editor (you) can click to add events
+          onClick={() => handleAddEventClick(dateKey)}
+        >
+          <div className="flex justify-between items-start">
+            <span className={`text-sm sm:text-lg ${isToday ? 'text-gray-900' : 'text-gray-900'}`}>{day}</span>
+            {dayEvents.length > 0 && (
+              <span className="text-xs bg-gray-800 text-white rounded-full h-5 w-5 flex items-center justify-center font-medium">
+                {dayEvents.length}
+              </span>
+            )}
+          </div>
+          <div className="flex flex-col mt-1 overflow-y-auto space-y-0.5 text-xs">
+            {dayEvents.slice(0, 2).map((event) => (
+              <div key={event.id} className="truncate bg-gray-100 p-0.5 rounded px-1 text-gray-800 leading-tight">
+                {event.time === 'All Day' ? event.title : `${event.time} ${event.title}`}
+              </div>
+            ))}
+            {dayEvents.length > 2 && (
+              <span className="text-gray-500 text-xs italic mt-0.5">+{dayEvents.length - 2} more...</span>
+            )}
+          </div>
+        </div>
+      );
+    }
 
-                calendarGrid.appendChild(dayElement);
-            }
-        }
+    return calendarDays;
+  };
 
-        function showDayDetails(dateString) {
-            const events = state.eventsByDate[dateString] || [];
-            const detailsPanel = document.getElementById('dayDetailsPanel');
-            const detailsContent = document.getElementById('dayDetailsContent');
+  const getEventsForSelectedDate = events[selectedDate] || [];
 
-            document.getElementById('festivalDate').value = dateString;
+  // --- 5. RENDER UI ---
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-100">
+        <div className="flex items-center space-x-3 p-6 bg-white rounded-xl shadow-xl">
+          <Loader className="w-6 h-6 animate-spin text-gray-800" />
+          <p className="text-lg font-medium text-gray-700">Connecting to the global event database...</p>
+        </div>
+      </div>
+    );
+  }
 
-            detailsContent.innerHTML = `
-                <h3 class="text-2xl font-bold mb-4 text-gray-800">${dateString}</h3>
-            `;
+  return (
+    <div className="min-h-screen bg-gray-100 font-[Inter] p-4 sm:p-8">
+      {error && (
+        <div className="bg-red-100 border-l-4 border-red-500 text-red-700 p-4 mb-6 rounded-lg flex items-center shadow-md">
+          <AlertCircle className="w-5 h-5 mr-3 flex-shrink-0" />
+          <p className="text-sm font-medium">{error}</p>
+        </div>
+      )}
 
-            if (events.length === 0) {
-                detailsContent.innerHTML += `<p class="text-gray-500 italic">No festivals scheduled for this day.</p>`;
-            } else {
-                events.forEach(event => {
-                    detailsContent.innerHTML += `
-                        <div class="bg-amber-50 p-4 mb-3 rounded-xl border border-amber-300 shadow-sm transition-all duration-300 hover:shadow-lg hover:border-amber-400">
-                            <!-- Image Display -->
-                            ${event.imageUrl ? `
-                                <img src="${event.imageUrl}"
-                                     alt="${event.name} image"
-                                     class="rounded-lg mb-3 w-full h-32 object-cover border border-amber-300"
-                                     onerror="this.onerror=null;this.src='https://placehold.co/400x128/fcd34d/333?text=Image+Not+Found';">
-                            ` : ''}
+      <header className="bg-white p-6 rounded-xl shadow-lg mb-6">
+        <div className="flex justify-between items-center mb-4">
+          <h1 className="text-3xl font-extrabold text-gray-900 flex items-center">
+            <Calendar className="w-8 h-8 text-gray-800 mr-3" /> Festival & Event Calendar
+          </h1>
+          <p className="text-sm bg-gray-800 text-white px-3 py-1 rounded-full font-medium">
+            Role: Editor ({userId ? userId.substring(0, 8) : 'N/A'}...)
+          </p>
+        </div>
+      </header>
 
-                            <div class="flex justify-between items-start">
-                                <h4 class="text-xl font-semibold text-gray-900">${event.name}</h4>
-                                <button onclick="deleteFestival('${event.id}')" class="text-gray-500 hover:text-gray-700 transition-colors flex-shrink-0 ml-2">
-                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                                        <path fill-rule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm4 0a1 1 0 10-2 0v6a1 1 0 102 0V8z" clip-rule="evenodd" />
-                                    </svg>
+      {/* Calendar Navigation */}
+      <div className="flex justify-between items-center mb-4 p-4 bg-white rounded-lg shadow-md">
+        <button
+          onClick={() => handleNavigation(-1)}
+          className="p-2 bg-gray-800 text-white rounded-full shadow-md hover:bg-gray-700 transition-colors"
+        >
+          &lt;
+        </button>
+        <h2 className="text-2xl font-semibold text-gray-800">
+          {DateUtils.getMonthYearString(currentDate)}
+        </h2>
+        <button
+          onClick={() => handleNavigation(1)}
+          className="p-2 bg-gray-800 text-white rounded-full shadow-md hover:bg-gray-700 transition-colors"
+        >
+          &gt;
+        </button>
+      </div>
+
+      {/* Calendar Grid */}
+      <div className="grid grid-cols-7 gap-1 bg-white p-4 rounded-xl shadow-xl">
+        {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(day => (
+          <div key={day} className="text-center font-bold text-gray-600 p-2 text-sm sm:text-base">
+            {day}
+          </div>
+        ))}
+        {renderCalendar()}
+      </div>
+
+      {/* Add/View Event Modal */}
+      {showModal && (
+        <div className="fixed inset-0 bg-gray-900 bg-opacity-75 flex items-center justify-center p-4 z-50 transition-opacity duration-300">
+          <div className="bg-white rounded-2xl p-6 w-full max-w-lg shadow-2xl transform scale-100 transition-transform duration-300">
+            <h3 className="text-2xl font-bold mb-6 text-gray-800">Manage Events for {selectedDate}</h3>
+
+            <div className="space-y-6">
+              
+              {/* 1. EXISTING EVENTS LIST (Moved to the top) */}
+              <section>
+                <h4 className="font-semibold text-xl mb-2 text-gray-800 border-b pb-1">Existing Events on {selectedDate}:</h4>
+                <div className="max-h-56 overflow-y-auto space-y-3 p-2 border border-gray-200 rounded-xl bg-gray-50">
+                  {getEventsForSelectedDate.length === 0 ? (
+                    <p className="text-gray-500 italic text-sm p-2">No events scheduled yet. Use the form below to add one!</p>
+                  ) : (
+                    getEventsForSelectedDate.map(event => (
+                      <div key={event.id} className="bg-white p-4 rounded-xl shadow-sm border border-gray-200">
+                        
+                        {/* HEADER ROW: Title, Time, and Delete Button */}
+                        <div className="flex items-start justify-between">
+                            <div className="flex flex-col min-w-0 flex-1 pr-4">
+                                <span className="font-bold text-lg text-gray-900 leading-tight truncate">{event.title}</span>
+                                <span className="text-sm font-medium text-gray-600 mt-0.5 flex-shrink-0">{event.time}</span>
+                            </div>
+
+                            {/* DELETE BUTTON: Now placed right next to the title/time */}
+                            <div className="flex-shrink-0 ml-4">
+                                <button
+                                    onClick={() => handleDeleteEvent(event.id)}
+                                    className={`p-2.5 rounded-xl text-sm font-medium transition-all duration-200 ${
+                                      confirmingDeleteId === event.id 
+                                        ? 'bg-red-600 text-white hover:bg-red-700 shadow-md' 
+                                        : 'bg-gray-100 text-red-500 hover:bg-red-100'
+                                    }`}
+                                >
+                                    {confirmingDeleteId === event.id ? (
+                                      'Confirm Delete?'
+                                    ) : (
+                                      <Trash2 className="w-5 h-5" />
+                                    )}
                                 </button>
                             </div>
-                            <!-- Location Display -->
-                            ${event.location ? `
-                                <p class="text-gray-600 text-sm mt-1 flex items-center">
-                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 mr-1 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.828 0l-4.243-4.243a8 8 0 1111.314 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
-                                    ${event.location}
-                                </p>
-                            ` : ''}
-                            <p class="text-gray-700 mt-2">${event.description || 'No description provided.'}</p>
-
-                            <!-- Links for Booking -->
-                            <div class="mt-3 space-y-2">
-                                ${event.flightUrl ? `
-                                    <a href="${event.flightUrl}" target="_blank" class="block text-sm font-medium text-amber-700 hover:text-amber-900 transition-colors flex items-center">
-                                        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"/></svg>
-                                        Book Flights
-                                    </a>
-                                ` : ''}
-                                ${event.hotelUrl ? `
-                                    <a href="${event.hotelUrl}" target="_blank" class="block text-sm font-medium text-amber-700 hover:text-amber-900 transition-colors flex items-center">
-                                        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h-2.5v-1.5a.5.5 0 00-.5-.5h-7a.5.5 0 00-.5.5V21H5m14 0v-9M5 21v-9m0 0h14"/></svg>
-                                        Book Hotels
-                                    </a>
-                                ` : ''}
-                            </div>
                         </div>
-                    `;
-                });
-            }
 
-            detailsPanel.scrollIntoView({ behavior: 'smooth' });
-        }
-
-        window.prevMonth = () => {
-            state.currentDate.setMonth(state.currentDate.getMonth() - 1);
-            renderCalendar();
-        }
-
-        window.nextMonth = () => {
-            state.currentDate.setMonth(state.currentDate.getMonth() + 1);
-            renderCalendar();
-        }
-
-        // --- NEW: Local Storage Fallback Functions ---
-
-        function saveToLocalStorage(festivals) {
-            try {
-                localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(festivals));
-            } catch (e) {
-                console.error("Error saving to localStorage:", e);
-                showMessage("Warning: Local storage failed. Your data might not be saved.", true);
-            }
-        }
-
-        function loadFromLocalStorage() {
-            try {
-                const data = localStorage.getItem(LOCAL_STORAGE_KEY);
-                return data ? JSON.parse(data) : [];
-            } catch (e) {
-                console.error("Error loading from localStorage:", e);
-                return [];
-            }
-        }
-
-        function setupLocalStorageListener() {
-            // Load initial data and update state/render
-            console.log("Offline Mode: Initializing data from localStorage.");
-            const festivals = loadFromLocalStorage();
-            updateState(festivals);
-
-            // In localStorage mode, we manually save and reload on every CRUD operation
-            // The 'listener' is implied by the CRUD functions calling saveToLocalStorage
-        }
-        
-        // --- Shared CRUD Logic (Handles both modes) ---
-
-        async function addFestival(event) {
-            event.preventDefault();
-
-            const name = document.getElementById('festivalName').value.trim();
-            const date = document.getElementById('festivalDate').value;
-            const description = document.getElementById('festivalDescription').value.trim();
-            const location = document.getElementById('festivalLocation').value.trim();
-            const flightUrl = document.getElementById('festivalFlightUrl').value.trim();
-            const hotelUrl = document.getElementById('festivalHotelUrl').value.trim();
-            const imageUrl = document.getElementById('festivalImageUrl').value.trim();
-
-            if (!name || !date) {
-                showMessage("Please provide both a Festival Name and a Date.", true);
-                return;
-            }
-            
-            const newFestival = {
-                name, date, description, location, flightUrl, hotelUrl, imageUrl,
-                createdAt: new Date().toISOString(),
-            };
-
-            try {
-                if (isOfflineMode) {
-                    // OFFLINE MODE: Use localStorage
-                    newFestival.id = Date.now().toString(); // Use a simple unique ID for local storage
-                    const festivals = loadFromLocalStorage();
-                    festivals.push(newFestival);
-                    saveToLocalStorage(festivals);
-                    updateState(festivals); // Manually trigger update
-                } else {
-                    // FIREBASE MODE: Use Firestore
-                    if (!isAuthReady || !db) {
-                        showMessage("Database connection is still loading. Please wait a moment.", true);
-                        return;
-                    }
-                    const festivalsRef = collection(db, `/artifacts/${appId}/users/${userId}/festivals`);
-                    await addDoc(festivalsRef, newFestival);
-                }
-
-                showMessage("Festival added successfully!");
-                document.getElementById('addFestivalForm').reset();
-            } catch (e) {
-                console.error("Error adding document: ", e);
-                showMessage("Failed to add festival. Check console for details.", true);
-            }
-        }
-        window.addFestival = addFestival;
-
-        async function deleteFestival(docId) {
-            try {
-                if (isOfflineMode) {
-                    // OFFLINE MODE: Use localStorage
-                    let festivals = loadFromLocalStorage();
-                    festivals = festivals.filter(f => f.id !== docId);
-                    saveToLocalStorage(festivals);
-                    updateState(festivals); // Manually trigger update
-                } else {
-                    // FIREBASE MODE: Use Firestore
-                    if (!isAuthReady || !db) {
-                        showMessage("Database connection is still loading. Please wait a moment.", true);
-                        return;
-                    }
-                    const festivalsRef = collection(db, `/artifacts/${appId}/users/${userId}/festivals`);
-                    const docRef = doc(festivalsRef, docId);
-                    await deleteDoc(docRef);
-                }
-
-                showMessage("Festival removed.");
-            } catch (e) {
-                console.error("Error deleting document: ", e);
-                showMessage("Failed to delete festival. Check console for details.", true);
-            }
-        }
-        window.deleteFestival = deleteFestival;
-
-        function setupFestivalListener() {
-            if (isOfflineMode) {
-                setupLocalStorageListener();
-                return;
-            }
-            
-            if (!db || !userId) {
-                console.error("Firestore or User ID is not ready for listener setup.");
-                return;
-            }
-
-            try {
-                const festivalsRef = collection(db, `/artifacts/${appId}/users/${userId}/festivals`);
-                const q = query(festivalsRef);
-
-                onSnapshot(q, (snapshot) => {
-                    const fetchedFestivals = [];
-                    snapshot.forEach((doc) => {
-                        const data = doc.data();
-                        fetchedFestivals.push({ id: doc.id, ...data });
-                    });
-                    updateState(fetchedFestivals);
-                }, (error) => {
-                    console.error("Firestore Listener Error:", error);
-                    showMessage("Error fetching real-time data.", true);
-                });
-
-            } catch (e) {
-                console.error("Error setting up listener:", e);
-                showMessage("Initialization error (Listener).", true);
-            }
-        }
-
-
-        // --- Authentication and Setup ---
-
-        async function initializeFirebase() {
-            // Set debug logging for better visibility into Auth/Firestore issues
-            setLogLevel('debug');
-                
-            if (Object.keys(firebaseConfig).length === 0) {
-                // CRITICAL FAILURE: No configuration provided. Enter Offline Mode.
-                isOfflineMode = true;
-                userId = crypto.randomUUID(); // Assign a temporary user ID for local storage path
-                document.getElementById('userIdDisplay').textContent = `OFFLINE MODE (Local Storage ID: ${userId.substring(0, 8)}...)`;
-                isAuthReady = true;
-                showMessage("Critical Error: Firebase config missing. Using Offline Mode (data will not persist online).", true);
-                setupFestivalListener(); 
-                return;
-            }
-            
-            // FIREBASE MODE: Attempt initialization
-            try {
-                app = initializeApp(firebaseConfig);
-                db = getFirestore(app);
-                auth = getAuth(app);
-
-                // Wait for authentication state to be determined
-                onAuthStateChanged(auth, async (user) => {
-                    if (user) {
-                        userId = user.uid;
-                        document.getElementById('userIdDisplay').textContent = userId;
-                        isAuthReady = true;
-                        console.log("Firebase Auth Ready. User ID:", userId);
-                        setupFestivalListener();
-                    } else {
-                        // Sign in anonymously if no token is available or if user is signed out
-                        if (initialAuthToken) {
-                            console.log("Signing in with custom token...");
-                            await signInWithCustomToken(auth, initialAuthToken);
-                        } else {
-                            console.log("Signing in anonymously...");
-                            await signInAnonymously(auth);
-                        }
-                    }
-                });
-
-            } catch (e) {
-                console.error("Firebase Initialization Error: ", e);
-                showMessage(`Critical Error: Firebase failed to initialize. Check console for details. Error: ${e.message}`, true);
-            }
-        }
-
-        // Run initialization on window load
-        window.onload = initializeFirebase;
-    </script>
-</head>
-<body class="min-h-screen p-4 sm:p-8">
-    <div class="max-w-7xl mx-auto">
-        <header class="text-center mb-10 p-6 bg-gray-900 text-white rounded-xl shadow-2xl">
-            <h1 class="text-4xl sm:text-5xl font-extrabold tracking-tight">
-                Festival Calendar
-            </h1>
-        </header>
-
-        <div id="messageBox" class="opacity-0 transition-opacity duration-300"></div>
-
-        <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
-            <!-- Left Column: Calendar View -->
-            <div class="lg:col-span-2 bg-white p-6 rounded-2xl shadow-xl">
-                <div class="flex justify-between items-center mb-6">
-                    <!-- Navigation buttons -->
-                    <button onclick="prevMonth()" class="p-2 rounded-full bg-gray-200 hover:bg-gray-300 transition-colors">
-                        <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-gray-900" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" /></svg>
-                    </button>
-                    <h2 id="monthTitle" class="text-3xl font-bold text-gray-800">Month Year</h2>
-                    <button onclick="nextMonth()" class="p-2 rounded-full bg-gray-200 hover:bg-gray-300 transition-colors">
-                        <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-gray-900" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" /></svg>
-                    </button>
+                        {/* BODY CONTENT */}
+                        <div className="space-y-2 pt-3 mt-3 border-t border-dashed border-gray-100">
+                            {event.location && (
+                                <div className="flex items-center text-sm text-gray-700">
+                                  <MapPin className="w-4 h-4 mr-2 text-gray-500 flex-shrink-0"/> {event.location}
+                                </div>
+                              )}
+                              {event.imageUrl && (
+                                  <img src={event.imageUrl} alt={event.title} className="w-full h-24 object-cover rounded-md mt-2 mb-1" onError={(e) => { e.target.onerror = null; e.target.src = "https://placehold.co/400x100/A3A3A3/FFFFFF?text=No+Image" }} />
+                              )}
+                                {event.description && (
+                                  <p className="text-sm text-gray-600 mt-2 italic">{event.description.substring(0, 100)}{event.description.length > 100 ? '...' : ''}</p>
+                              )}
+                              <div className="space-y-1 pt-2 text-sm">
+                                {event.articleLink && (
+                                  <a href={event.articleLink} target="_blank" rel="noopener noreferrer" className="text-gray-700 hover:text-gray-900 underline flex items-center">
+                                    <Link className="w-4 h-4 mr-1"/> Read Article
+                                  </a>
+                                )}
+                                {event.bookingLink && (
+                                  <a href={event.bookingLink} target="_blank" rel="noopener noreferrer" className="text-gray-700 hover:text-gray-900 underline flex items-center">
+                                    <Link className="w-4 h-4 mr-1"/> Book Travel/Tickets
+                                  </a>
+                                )}
+                              </div>
+                              <p className="text-xs text-gray-400 mt-2">Added by: {event.createdBy.substring(0, 8)}...</p>
+                        </div>
+                      </div>
+                    ))
+                  )}
                 </div>
+              </section>
 
-                <div id="calendarGrid" class="day-grid bg-gray-300 rounded-lg overflow-hidden shadow-inner">
-                    <!-- Calendar cells rendered by JavaScript -->
+              {/* 2. ADD NEW EVENT FORM (Now below the list) */}
+              <section className="mt-6 pt-6 border-t border-gray-200">
+                <h4 className="font-semibold text-lg mb-3 text-gray-700 flex items-center"><Plus className="w-5 h-5 mr-2" /> Add New Event</h4>
+                <div className="space-y-3 p-4 border border-gray-200 rounded-xl bg-gray-50">
+                  <input
+                    type="text"
+                    name="title"
+                    placeholder="Event/Festival Title (Mandatory)"
+                    value={newEvent.title}
+                    onChange={handleInputChange}
+                    className="w-full p-3 border border-gray-300 rounded-lg focus:ring-gray-500 focus:border-gray-500"
+                  />
+                  
+                  {/* Location */}
+                  <div className="flex items-center space-x-2">
+                    <MapPin className="w-5 h-5 text-gray-500 flex-shrink-0" />
+                    <input
+                      type="text"
+                      name="location"
+                      placeholder="Location (e.g., City, Venue Name)"
+                      value={newEvent.location}
+                      onChange={handleInputChange}
+                      className="w-full p-3 border border-gray-300 rounded-lg focus:ring-gray-500 focus:border-gray-500"
+                    />
+                  </div>
+
+                  <input
+                    type="text"
+                    name="time"
+                    placeholder="Time (e.g., 10:00 AM or All Day)"
+                    value={newEvent.time}
+                    onChange={handleInputChange}
+                    className="w-full p-3 border border-gray-300 rounded-lg focus:ring-gray-500 focus:border-gray-500"
+                  />
+                  
+                  {/* Description */}
+                   <div className="flex items-start space-x-2">
+                    <AlignLeft className="w-5 h-5 text-gray-500 mt-3 flex-shrink-0" />
+                    <textarea
+                      name="description"
+                      placeholder="Description/Summary of the event"
+                      value={newEvent.description}
+                      onChange={handleInputChange}
+                      rows="3"
+                      className="w-full p-3 border border-gray-300 rounded-lg focus:ring-gray-500 focus:border-gray-500 resize-none"
+                    ></textarea>
+                  </div>
+                  
+                  {/* Links and Image */}
+                  <div className="flex items-center space-x-2">
+                    <Link className="w-5 h-5 text-gray-500 flex-shrink-0" />
+                    <input
+                      type="url"
+                      name="articleLink"
+                      placeholder="Article Link (e.g., event description)"
+                      value={newEvent.articleLink}
+                      onChange={handleInputChange}
+                      className="w-full p-3 border border-gray-300 rounded-lg focus:ring-gray-500 focus:border-gray-500"
+                    />
+                  </div>
+                   <div className="flex items-center space-x-2">
+                    <Link className="w-5 h-5 text-gray-500 flex-shrink-0" />
+                    <input
+                      type="url"
+                      name="bookingLink"
+                      placeholder="Booking/Travel Link (Flights, Hotels, Agents)"
+                      value={newEvent.bookingLink}
+                      onChange={handleInputChange}
+                      className="w-full p-3 border border-gray-300 rounded-lg focus:ring-gray-500 focus:border-gray-500"
+                    />
+                  </div>
+                  <div className="flex items-center space-x-2">
+                    <Image className="w-5 h-5 text-gray-500 flex-shrink-0" />
+                    <input
+                      type="url"
+                      name="imageUrl"
+                      placeholder="Image URL (for display)"
+                      value={newEvent.imageUrl}
+                      onChange={handleInputChange}
+                      className="w-full p-3 border border-gray-300 rounded-lg focus:ring-gray-500 focus:border-gray-500"
+                    />
+                  </div>
                 </div>
+              </section>
+
+              <div className="flex justify-end space-x-3">
+                <button
+                  onClick={() => setShowModal(false)}
+                  className="px-4 py-2 text-gray-600 bg-gray-200 rounded-xl hover:bg-gray-300 transition-colors"
+                  disabled={isSaving}
+                >
+                  Close
+                </button>
+                <button
+                  onClick={handleSaveEvent}
+                  className={`px-4 py-2 flex items-center rounded-xl transition-all duration-200 ${
+                    isSaving ? 'bg-gray-300 cursor-not-allowed' : 'bg-gray-800 text-white hover:bg-gray-700 shadow-lg'
+                  }`}
+                  disabled={isSaving}
+                >
+                  {isSaving ? (
+                    <>
+                      <Loader className="w-4 h-4 mr-2 animate-spin" /> Saving...
+                    </>
+                  ) : (
+                    <>
+                      <Save className="w-4 h-4 mr-2" /> Save New Event
+                    </>
+                  )}
+                </button>
+              </div>
+
             </div>
-
-            <!-- Right Column: Add Event Form & Details Panel -->
-            <div class="lg:col-span-1 space-y-8">
-                <!-- Add New Festival Form -->
-                <div class="bg-white p-6 rounded-2xl shadow-xl border-t-4 border-gray-900">
-                    <h3 class="text-2xl font-bold mb-4 text-gray-900">Add New Festival</h3>
-                    <form id="addFestivalForm" onsubmit="addFestival(event)">
-                        <div class="mb-4">
-                            <label for="festivalName" class="block text-sm font-medium text-gray-700">Festival Name</label>
-                            <input type="text" id="festivalName" required class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-3 border focus:ring-gray-900 focus:border-gray-900">
-                        </div>
-                        <div class="mb-4">
-                            <label for="festivalDate" class="block text-sm font-medium text-gray-700">Date</label>
-                            <input type="date" id="festivalDate" required class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-3 border focus:ring-gray-900 focus:border-gray-900">
-                        </div>
-                        <!-- NEW FIELD: Location -->
-                        <div class="mb-4">
-                            <label for="festivalLocation" class="block text-sm font-medium text-gray-700">Location</label>
-                            <input type="text" id="festivalLocation" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-3 border focus:ring-gray-900 focus:border-gray-900" placeholder="e.g., Miami, Florida">
-                        </div>
-                        <div class="mb-4">
-                            <label for="festivalDescription" class="block text-sm font-medium text-gray-700">Description (Optional)</label>
-                            <textarea id="festivalDescription" rows="2" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-3 border focus:ring-gray-900 focus:border-gray-900"></textarea>
-                        </div>
-                        <hr class="my-6 border-gray-200">
-                        <h4 class="text-lg font-bold mb-3 text-gray-700">Travel & Media (Optional)</h4>
-                        <!-- NEW FIELD: Flight URL -->
-                        <div class="mb-4">
-                            <label for="festivalFlightUrl" class="block text-sm font-medium text-gray-700">Book Flights (URL)</label>
-                            <input type="url" id="festivalFlightUrl" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-3 border focus:ring-gray-900 focus:border-gray-900" placeholder="https://skyscanner.com/...">
-                        </div>
-                        <!-- NEW FIELD: Hotel URL -->
-                        <div class="mb-4">
-                            <label for="festivalHotelUrl" class="block text-sm font-medium text-gray-700">Book Hotels (URL)</label>
-                            <input type="url" id="festivalHotelUrl" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-3 border focus:ring-gray-900 focus:border-gray-900" placeholder="https://airbnb.com/...">
-                        </div>
-                        <!-- NEW FIELD: Image URL -->
-                        <div class="mb-6">
-                            <label for="festivalImageUrl" class="block text-sm font-medium text-gray-700">Image (URL)</label>
-                            <input type="url" id="festivalImageUrl" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-3 border focus:ring-gray-900 focus:border-gray-900" placeholder="https://example.com/festival.jpg">
-                        </div>
-
-                        <!-- Submit button -->
-                        <button type="submit" class="w-full py-3 px-4 border border-transparent rounded-lg shadow-lg text-lg font-medium text-white bg-gray-800 hover:bg-gray-900 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-800 transition-all duration-200">
-                            Save Festival
-                        </button>
-                    </form>
-                </div>
-
-                <!-- Day Details Panel -->
-                <div id="dayDetailsPanel" class="bg-white p-6 rounded-2xl shadow-xl border-t-4 border-gray-900">
-                    <h3 class="text-2xl font-bold mb-4 text-gray-900">Day Details</h3>
-                    <div id="dayDetailsContent">
-                        <p class="text-gray-500">Click on any day in the calendar to view its details and scheduled festivals.</p>
-                    </div>
-                </div>
-            </div>
+          </div>
         </div>
-
-        <!-- Footer / User Info -->
-        <footer class="mt-10 pt-4 text-center text-sm text-gray-500 border-t border-gray-300">
-            <p>Data ID Status: <code id="userIdDisplay" class="font-mono text-xs bg-gray-200 p-1 rounded-md text-gray-700 break-all">Loading User ID...</code></p>
-            <p class="mt-1">If the ID above says "OFFLINE MODE", your data is stored locally in your browser.</p>
-        </footer>
+      )}
     </div>
-</body>
-</html>
+  );
+};
+
+export default App;
